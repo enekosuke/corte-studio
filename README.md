@@ -27,6 +27,16 @@ Estudio NLE local con IA para convertir vídeos largos y directos activos de **Y
 
 ---
 
+## Entrega para un equipo sin GPU dedicada
+
+1. Clona este repositorio. Instala Node.js 22+, Python 3.11+ y una compilación de FFmpeg y FFprobe con `ass`, `drawtext`, H.264 y AV1.
+2. En la raíz ejecuta `python -m pip install --target .corte-data/python-tools -r requirements.txt`.
+3. Copia `.env.example` a `.env` y añade una clave propia de Gemini u OpenRouter. Deja `CORTE_WHISPER_DEVICE=cpu`, `CORTE_WHISPER_COMPUTE=int8`, `CORTE_WHISPER_MODEL=small` y `CORTE_FFMPEG_GPU=0`. En un portátil lento puedes probar Whisper `base`.
+4. Arranca con `node --env-file=.env server.mjs`. Abre `http://127.0.0.1:4173` y elige **Gemini** u **OpenRouter** en **Motor**. La transcripción y el render usan el equipo local. La API se encarga del análisis editorial y visual. En equipos sin GPU dedicada se recomienda omitir la instalación de GGUF y llama.cpp.
+5. Ejecuta `npm test` y después prueba un vídeo corto que tengas permiso para usar. Comprueba que el trabajo llega al final, que se reproduce un MP4 y que abre su ficha de publicación. En OpenRouter elige un modelo con visión disponible para tu cuenta.
+
+El repositorio incluye el código, las pruebas y la guía del agente en `.agents/skills/corte-studio-agent/`. Los vídeos, modelos y credenciales pertenecen a cada instalación en `.corte-data/`. Cada persona debe usar sus propias claves y conectar su propio canal.
+
 ## Modos de vídeo en la portada
 
 En la tarjeta principal (`http://127.0.0.1:4173`) puedes alternar entre dos modos con el interruptor superior sin que uno interfiera con el otro:
@@ -37,7 +47,7 @@ En la tarjeta principal (`http://127.0.0.1:4173`) puedes alternar entre dos modo
    - En `gameplay` / `shared` garantiza que la cámara pequeña vaya **siempre arriba** y el gameplay **siempre abajo** (elevado para no quedar tapado por la descripción en móvil), con título cinético persistente en la franja intermedia.
 
 2. **Vídeo prototipo (`Voz IA · ≤30s`)**
-   - Analiza exactamente igual los mejores puntos estratégicos y virales, pero **excluye y recorta automáticamente la cámara del youtuber** (sin cara ni webcam incrustada, ideal por derechos de autor).
+   - Analiza exactamente igual los mejores puntos estratégicos y virales, pero **excluye y recorta automáticamente la cámara del youtuber** (con seguimiento del área de juego).
    - Limita cada clip a un **máximo estricto de 30 segundos**.
    - Estructura del montaje automático:
      1. Muestra `0,5 s` de gameplay real con audio original.
@@ -75,7 +85,7 @@ python -m pip install --target .corte-data/python-tools -r requirements.txt
 
 ### 3. Configurar modelo de IA (recomendado: API sin GPU dedicada)
 
-Copia `.env.example` o define la variable de entorno en la misma sesión de terminal antes de arrancar `node server.mjs`:
+Para un archivo `.env`, copia `.env.example`, rellena tus propias variables y arranca con `node --env-file=.env server.mjs`. Si defines las variables directamente en el terminal, arranca con `node server.mjs`:
 
 #### Opción A — Sin GPU dedicada (CPU / portátil — Recomendado)
 ```powershell
@@ -118,8 +128,8 @@ Abre **`http://127.0.0.1:4173`** en tu navegador.
 
 ### 6. (Opcional) Subida directa y programación automática en YouTube
 Si deseas publicar Shorts directamente desde el cajón de **Publicación rápida** vía YouTube Data API v3:
-1. Crea credenciales OAuth 2.0 ("Aplicación de escritorio" o "Web") en Google Cloud con YouTube Data API v3 habilitada.
-2. Guarda el JSON como `.corte-data/youtube-client-secret.json`.
+1. Habilita YouTube Data API v3 en Google Cloud y crea un cliente OAuth de escritorio. Si eliges un cliente Web, registra una URI de redirección local exacta, por ejemplo `http://127.0.0.1:4174/oauth2/callback`, y descarga de nuevo su JSON.
+2. Guarda el JSON como `.corte-data/youtube-client-secret.json`. Para cambiar de canal, conserva aparte el token anterior y autoriza el nuevo canal antes de iniciar el lote. Comprueba el canal en **Publicación rápida**. Los registros existentes de subida de cada proyecto se usan para omitir archivos ya subidos, por lo que un reenvío a un canal distinto necesita revisar esos registros.
 3. Al pulsar subir/publicar desde el estudio o CLI (`pipeline/youtube_upload.mjs`), autoriza tu canal y el token OAuth quedará guardado localmente en `.corte-data/youtube-token.json` (excluido de Git por `.gitignore`).
 
 ---
