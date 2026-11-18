@@ -1,0 +1,13 @@
+{
+  "name": "corte-studio",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Real-time AI short-form video studio for YouTube and Twitch (VODs, live DVR streams, no-cam voice-narrated prototypes, and YouTube Shorts SEO uploader).",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test tests/studio.test.mjs"
+  }
+}

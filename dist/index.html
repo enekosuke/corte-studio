@@ -1,0 +1,516 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Estudio NLE por proyectos de YouTube con seguimiento en tiempo real, onda de sonido GPU y publicación rápida.">
+  <meta name="theme-color" content="#080710">
+  <title>Corte Studio — Estudio de Edición</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="./studio.css">
+  <script src="./youtube.js" defer></script>
+  <script src="./studio.js" defer></script>
+  <script src="./publication.js" defer></script>
+  <script src="./jobs.js" defer></script>
+</head>
+<body data-view="home">
+  <svg class="symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <defs>
+      <filter id="water-drop-lens" x="-15%" y="-15%" width="130%" height="130%" color-interpolation-filters="sRGB">
+        <feTurbulence type="fractalNoise" baseFrequency="0.014 0.022" numOctaves="2" seed="7" result="noise"/>
+        <feGaussianBlur in="noise" stdDeviation="1.8" result="softNoise"/>
+        <feDisplacementMap in="SourceGraphic" in2="softNoise" scale="18" xChannelSelector="R" yChannelSelector="G"/>
+      </filter>
+    </defs>
+    <symbol id="i-scissors" viewBox="0 0 24 24"><circle cx="6" cy="6" r="3"/><path d="M8.2 8.2 21 21M14 14l-5.8 5.8M21 3 10.7 13.3"/><circle cx="6" cy="20" r="3"/></symbol>
+    <symbol id="i-studio" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 9h18m-13-5-2 5m9-5-2 5m4 5-4 2v-4z"/></symbol>
+    <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13.5a4 4 0 0 0 5.7 0l4-4A4 4 0 0 0 14 3.8l-2.3 2.3m2.3 4.4a4 4 0 0 0-5.7 0l-4 4A4 4 0 0 0 10 20.2l2.3-2.3"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M4 12h15m-6-6 6 6-6 6"/></symbol>
+    <symbol id="i-arrow-left" viewBox="0 0 24 24"><path d="M20 12H5m6 6-6-6 6-6"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
+    <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="5.5"/><path d="m15 15 4.5 4.5"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5m0-8h.01"/></symbol>
+    <symbol id="i-sparkles" viewBox="0 0 24 24"><path d="M12 3 13.8 8.2 19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8zM19 3v4m2-2h-4M5 17v4m2-2H3"/></symbol>
+    <symbol id="i-wave" viewBox="0 0 24 24"><path d="M3 12v0M7 8v8M11 4v16M15 7v10M19 10v4M22 12v0"/></symbol>
+    <symbol id="i-rocket" viewBox="0 0 24 24"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h16M4 17h16M9 4v6M15 14v6"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+    <symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 3 9 4.5-9 4.5-9-4.5z"/><path d="m3 12 9 4.5 9-4.5M3 16.5 12 21l9-4.5"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+    <symbol id="i-clips" viewBox="0 0 24 24"><rect x="8" y="7" width="12" height="14" rx="2"/><path d="M16 3H6a2 2 0 0 0-2 2v12m9-6 4 3-4 3z"/></symbol>
+  </svg>
+
+  <header class="app-topbar">
+    <div class="topbar-left">
+      <button type="button" class="brand brand-button" id="brand-home" aria-label="Corte Studio, ir al lanzador">
+        <span class="brand-mark"><svg><use href="#i-scissors"/></svg></span>
+        <span>Corte<span class="brand-light"> Studio</span></span>
+      </button>
+      <button type="button" class="top-link back-home-btn" id="back-to-home" hidden>
+        <svg><use href="#i-arrow-left"/></svg>
+        <span>Nuevo enlace</span>
+      </button>
+      <button type="button" class="active-job-banner" id="active-job-banner" hidden>
+        <span class="live-dot"></span>
+        <span id="active-job-banner-text">Proyecto en curso</span>
+        <svg><use href="#i-chevron"/></svg>
+      </button>
+    </div>
+
+    <div class="topbar-right">
+      <button type="button" class="top-link drawer-toggle" id="toggle-publish-drawer" hidden>
+        <svg><use href="#i-rocket"/></svg>
+        <span>Publicación rápida</span>
+      </button>
+
+      <div class="projects-dropdown" id="projects-dropdown">
+        <button type="button" class="projects-trigger" id="projects-dropdown-btn" aria-expanded="false" aria-controls="projects-dropdown-menu">
+          <svg><use href="#i-folder"/></svg>
+          <span>Proyectos</span>
+          <span class="projects-count-pill" id="projects-url-count">0 URLs</span>
+          <svg class="trigger-chevron"><use href="#i-chevron-down"/></svg>
+        </button>
+
+        <div class="projects-menu" id="projects-dropdown-menu" hidden>
+          <div class="projects-menu-head">
+            <div>
+              <strong>Proyectos por URL de YouTube</strong>
+              <span>Una entrada por enlace · desplegable de versiones</span>
+            </div>
+          </div>
+          <label class="projects-search">
+            <svg><use href="#i-search"/></svg>
+            <input type="search" id="projects-filter" placeholder="Filtrar por URL de YouTube o título…" autocomplete="off">
+          </label>
+          <p id="history-status" class="history-status" role="status"></p>
+          <ul id="history-list" class="history-list" hidden></ul>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main class="app-shell">
+    <!-- PANTALLA 1: LANZADOR LIMPIO -->
+    <section id="view-home" class="home-screen" aria-labelledby="page-title">
+      <div class="home-ambient" aria-hidden="true"></div>
+      <div class="launcher-stage">
+        <div class="intro">
+          <span class="intro-eyebrow"><svg><use href="#i-sparkles"/></svg>Estudio de montaje en tiempo real · CUDA GPU</span>
+          <h1 id="page-title">Pega un enlace de YouTube.<br>Abre tu editor al instante.</h1>
+          <p>Cada URL crea su propio proyecto con visor en vivo, pista de audio neuronal y sus versiones organizadas a la derecha.</p>
+        </div>
+
+        <section class="source launcher-card" aria-labelledby="source-title">
+          <div class="source-mode-row">
+            <div class="source-heading">
+              <span class="source-icon"><svg><use href="#i-link"/></svg></span>
+              <div>
+                <h2 id="source-title">Nuevo proyecto desde YouTube o Twitch</h2>
+                <p id="source-subtitle">Pega un vídeo de YouTube o un directo, VOD o clip de Twitch.</p>
+              </div>
+            </div>
+
+            <div class="mode-switch" role="radiogroup" aria-label="Tipo de vídeo a generar">
+              <button type="button" class="mode-switch-btn is-active" id="mode-normal-btn" data-mode="normal" role="radio" aria-checked="true">
+                Vídeos normales
+              </button>
+              <button type="button" class="mode-switch-btn" id="mode-prototype-btn" data-mode="prototype" role="radio" aria-checked="false">
+                Vídeo prototipo <span class="mode-tag">Voz IA · ≤30s</span>
+              </button>
+            </div>
+          </div>
+
+          <form id="source-form" class="source-form" novalidate>
+            <label class="sr-only" for="source-url">Enlace de YouTube o Twitch</label>
+            <input type="url" id="source-url" name="youtube" placeholder="https://www.youtube.com/watch?v=… o https://www.twitch.tv/…" aria-describedby="source-note" autocomplete="off" spellcheck="false" required>
+            <div class="source-actions">
+              <button type="submit" class="primary" id="continue-source">Crear proyecto <svg><use href="#i-arrow"/></svg></button>
+              <button type="button" class="danger-button" id="cancel-source" hidden disabled>Cancelar todo</button>
+            </div>
+
+            <div class="engine-options">
+              <label>Motor
+                <select id="source-engine" name="provider" disabled>
+                  <option value="gemini">Gemini 4 Hydrogen (Medium)</option>
+                  <option value="openrouter">OpenRouter (Gratis)</option>
+                  <option value="local">Modelo local (llama.cpp)</option>
+                </select>
+              </label>
+              <label id="local-model-field" hidden>Modelo
+                <select id="source-model" name="model" disabled></select>
+              </label>
+              <label id="voice-model-field" hidden>Voz locutor
+                <select id="source-voice" name="voice"></select>
+              </label>
+            </div>
+
+            <details class="format-menu" id="source-format">
+              <summary><svg><use href="#i-sliders"/></svg><span>Parámetros de formato y diseño</span><span id="format-summary"></span></summary>
+              <div class="format-options">
+                <fieldset>
+                  <legend>Seleccionar proporción</legend>
+                  <div class="format-choices ratio-choices">
+                    <label class="format-option"><input type="radio" name="ratio" value="9:16" checked><span class="ratio-thumb portrait-ratio" aria-hidden="true"></span><span>9:16</span></label>
+                    <label class="format-option"><input type="radio" name="ratio" value="16:9"><span class="ratio-thumb wide-ratio" aria-hidden="true"></span><span>16:9</span></label>
+                    <label class="format-option"><input type="radio" name="ratio" value="1:1"><span class="ratio-thumb square-ratio" aria-hidden="true"></span><span>1:1</span></label>
+                    <label class="format-option"><input type="radio" name="ratio" value="4:5"><span class="ratio-thumb tall-ratio" aria-hidden="true"></span><span>4:5</span></label>
+                  </div>
+                </fieldset>
+                <fieldset>
+                  <legend>Diseños que puede usar la IA</legend>
+                  <div class="format-choices layout-choices">
+                    <label class="format-option"><input type="checkbox" name="layout" value="fill" checked><span class="layout-thumb layout-fill" aria-hidden="true"><i></i></span><span>Rellenar</span></label>
+                    <label class="format-option"><input type="checkbox" name="layout" value="fit" checked><span class="layout-thumb layout-fit" aria-hidden="true"><i></i></span><span>Ajustar</span></label>
+                    <label class="format-option"><input type="checkbox" name="layout" value="split" checked><span class="layout-thumb layout-split" aria-hidden="true"><i></i><i></i></span><span>Dividir</span></label>
+                    <label class="format-option"><input type="checkbox" name="layout" value="three" checked><span class="layout-thumb layout-three" aria-hidden="true"><i></i><i></i><i></i></span><span>Tres</span></label>
+                    <label class="format-option"><input type="checkbox" name="layout" value="four" checked><span class="layout-thumb layout-four" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span>Cuatro</span></label>
+                    <label class="format-option"><input type="checkbox" name="layout" value="shared" checked><span class="layout-thumb layout-shared" aria-hidden="true"><i></i><i></i></span><span>Compartir</span></label>
+                    <label class="format-option"><input type="checkbox" name="layout" value="gameplay" checked><span class="layout-thumb layout-game" aria-hidden="true"><i></i><i></i></span><span>Gameplay</span></label>
+                  </div>
+                </fieldset>
+                <fieldset>
+                  <legend>Diseño Ajustar: relación de recorte</legend>
+                  <div class="format-choices ratio-choices">
+                    <label class="format-option"><input type="radio" name="fit-crop" value="original" checked><span class="ratio-thumb crop-thumb crop-original" aria-hidden="true"></span><span>Original</span></label>
+                    <label class="format-option"><input type="radio" name="fit-crop" value="4:3" aria-label="Recortar Ajustar a 4:3"><span class="ratio-thumb crop-thumb crop-standard" aria-hidden="true"></span><span>4:3</span></label>
+                    <label class="format-option"><input type="radio" name="fit-crop" value="1:1" aria-label="Recortar Ajustar a 1:1"><span class="ratio-thumb crop-thumb crop-square" aria-hidden="true"></span><span>1:1</span></label>
+                  </div>
+                </fieldset>
+                <fieldset>
+                  <legend>Gameplay / Reacción: pantalla de contenido</legend>
+                  <div class="format-choices ratio-choices">
+                    <label class="format-option"><input type="radio" name="content-crop" value="auto" checked><span class="ratio-thumb content-thumb content-auto" aria-hidden="true"><i></i><i></i></span><span>Auto (IA)</span></label>
+                    <label class="format-option"><input type="radio" name="content-crop" value="side" aria-label="Contenido lateral completo"><span class="ratio-thumb content-thumb content-side" aria-hidden="true"><i></i><i></i></span><span>Lateral completo</span></label>
+                    <label class="format-option"><input type="radio" name="content-crop" value="below" aria-label="Contenido en franja inferior"><span class="ratio-thumb content-thumb content-below" aria-hidden="true"><i></i><i></i></span><span>Franja inferior</span></label>
+                  </div>
+                </fieldset>
+              </div>
+            </details>
+          </form>
+
+          <p class="source-note" id="source-note" role="status"><svg><use href="#i-info"/></svg><span>Whisper transcribe en GPU. OpenRouter y Gemini analizan los mejores momentos.</span></p>
+        </section>
+      </div>
+    </section>
+
+    <!-- PANTALLA 2: EDITOR NLE EN TIEMPO REAL -->
+    <section id="view-editor" class="editor-screen" aria-label="Editor del proyecto" hidden>
+      <section id="resultado" class="nle-workspace" aria-labelledby="job-title">
+        <div class="nle-project-bar">
+          <div class="nle-project-id">
+            <div class="project-badges">
+              <span class="project-badge"><span class="live-dot"></span>Proyecto NLE</span>
+              <span class="prototype-badge" id="job-mode-badge" hidden>Prototipo · Sin cámara · Voz IA</span>
+              <a id="job-url-chip" class="job-url-chip" target="_blank" rel="noopener noreferrer" hidden>youtube.com</a>
+              <p id="job-engine" class="job-engine" hidden></p>
+              <span class="job-state" id="job-state"></span>
+            </div>
+            <h1 id="job-title" tabindex="-1">Procesando proyecto</h1>
+          </div>
+
+          <div class="nle-project-controls">
+            <label class="version-switch" id="editor-version-wrap" hidden>
+              <span>Versión</span>
+              <select id="editor-version-select" aria-label="Cambiar versión del proyecto"></select>
+            </label>
+            <button type="button" class="resume-job-btn" id="resume-job" hidden>
+              <svg><use href="#i-sparkles"/></svg>
+              <span id="resume-job-label">Terminar vídeo</span>
+            </button>
+            <button type="button" class="top-link project-drawer-btn" id="open-publish-drawer" hidden>
+              <svg><use href="#i-rocket"/></svg>
+              <span>Publicación</span>
+            </button>
+            <button type="button" class="danger-button" id="cancel-job" hidden>Cancelar todo</button>
+          </div>
+        </div>
+
+        <ol class="job-steps" id="job-steps" aria-label="Etapas del proyecto">
+          <li><span>01</span>Importación</li>
+          <li><span>02</span>Whisper Audio GPU</li>
+          <li><span>03</span>IA Viral</li>
+          <li><span>04</span>Encuadre y render</li>
+          <li><span>05</span>Publicación</li>
+        </ol>
+
+        <div class="nle-deck">
+          <!-- MONITOR PRINCIPAL -->
+          <div class="nle-monitor-col">
+            <div class="panel nle-monitor-panel">
+              <div class="nle-panel-titlebar">
+                <span>PROGRAM MONITOR · MASTER STREAM</span>
+                <div class="monitor-title-actions">
+                  <button type="button" class="speed-toggle-btn" id="toggle-monitor-speed" title="Alternar entre vista acelerada y velocidad 1×">Auto</button>
+                  <span class="hud-timecode" id="project-timecode">00:00 / 00:00</span>
+                </div>
+              </div>
+
+              <div class="project-monitor" id="project-monitor">
+                <video id="project-source-video" muted loop playsinline preload="auto" hidden></video>
+
+                <div class="project-video-fx" id="project-video-fx" aria-hidden="true">
+                  <span class="fx-aperture"></span>
+                  <span class="fx-scanline"></span>
+                  <span class="fx-bracket fx-tl"></span>
+                  <span class="fx-bracket fx-tr"></span>
+                  <span class="fx-bracket fx-bl"></span>
+                  <span class="fx-bracket fx-br"></span>
+                </div>
+
+                <div class="project-video-loader" id="project-video-loader">
+                  <div class="loader-grid" aria-hidden="true"></div>
+                  <div class="loader-scan" aria-hidden="true"></div>
+                  <canvas class="loader-cascade-canvas" id="loader-cascade-canvas" aria-hidden="true"></canvas>
+                  <div class="loader-data-stream" id="loader-data-stream" aria-hidden="true">
+                    <div class="data-packets-track" id="data-packets-track"></div>
+                    <div class="data-metrics-bar">
+                      <span id="loader-speed-metric">STREAM · CONECTANDO</span>
+                      <span id="loader-packets-metric">PKTS · 0</span>
+                      <span id="loader-percent-metric">0%</span>
+                    </div>
+                    <div class="loader-progress-rail"><span id="loader-progress-fill"></span></div>
+                  </div>
+                  <div class="loader-core" aria-hidden="true">
+                    <span class="loader-ring"></span>
+                    <span class="loader-ring loader-ring-delay"></span>
+                    <svg><use href="#i-studio"/></svg>
+                  </div>
+                  <p class="loader-title" id="project-loader-title">Materializando vídeo maestro…</p>
+                  <p class="loader-sub" id="project-loader-sub">Se abrirá aquí con velocidad acelerada en cuanto termine la codificación</p>
+                  <span class="loader-elapsed" id="loader-elapsed">00:00</span>
+                </div>
+
+                <div class="project-hud">
+                  <div class="hud-top">
+                    <span class="hud-pill" id="project-speed-badge"><span class="hud-dot"></span><span>ENLAZANDO STREAM</span></span>
+                  </div>
+                  <div class="hud-bottom">
+                    <p id="job-status" role="status"></p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- PANEL CENTRAL AMPLIADO AL CLICAR UN CLIP -->
+          <section class="nle-spotlight-col panel" id="clip-spotlight" aria-labelledby="spotlight-title" aria-hidden="true">
+            <div class="spotlight-header">
+              <div class="spotlight-title-wrap">
+                <div class="spotlight-badges">
+                  <span class="clip-num-pill" id="spotlight-num">#01</span>
+                  <span class="clip-ratio-pill" id="spotlight-ratio">9:16</span>
+                  <span class="clip-score-pill" id="spotlight-score" hidden></span>
+                  <span class="clip-cat-pill" id="spotlight-category" hidden></span>
+                  <span class="job-clip-times" id="spotlight-times">00:00–00:00</span>
+                </div>
+                <h2 id="spotlight-title">Título del clip</h2>
+              </div>
+              <button type="button" class="spotlight-close-btn" id="close-clip-spotlight" aria-label="Cerrar clip ampliado y restaurar tamaño">
+                <svg><use href="#i-close"/></svg>
+              </button>
+            </div>
+            <div class="spotlight-stage-wrap">
+              <div class="clip-format-stage spotlight-format-stage" id="spotlight-stage" data-ratio="9:16">
+                <video id="spotlight-video" controls playsinline preload="metadata"></video>
+              </div>
+            </div>
+            <div class="spotlight-footer">
+              <p class="spotlight-hook-line" id="spotlight-hook" hidden></p>
+              <p class="job-clip-reason" id="spotlight-reason"></p>
+              <div class="job-clip-actions">
+                <button type="button" class="top-link clip-publication" id="spotlight-pub-btn">Preparar publicación</button>
+                <a class="top-link" id="spotlight-mp4-btn">Descargar MP4</a>
+                <a class="top-link" id="spotlight-ass-btn">Subtítulos ASS</a>
+              </div>
+            </div>
+          </section>
+
+          <!-- BIN DE CLIPS DEL PROYECTO ACTUAL -->
+          <aside class="nle-inspector-col panel" id="clips" aria-labelledby="clips-title">
+            <div class="nle-panel-titlebar">
+              <div class="inspector-title">
+                <svg><use href="#i-clips"/></svg>
+                <h2 id="clips-title">Clips del proyecto</h2>
+              </div>
+              <span id="job-clip-count" class="inspector-count">0 clips</span>
+            </div>
+
+            <details id="transcripcion-real" class="job-transcript" hidden>
+              <summary>Transcripción del proyecto <span id="job-transcript-count"></span></summary>
+              <div class="job-transcript-list" id="job-transcript" tabindex="0" role="region" aria-label="Transcripción del vídeo"></div>
+            </details>
+
+            <div class="nle-clips-scroll">
+              <p id="clips-status" class="clips-status" role="status">Los clips exportados de esta URL aparecerán aquí en tiempo real.</p>
+              <div class="clip-library" id="job-clips"></div>
+            </div>
+          </aside>
+        </div>
+
+        <!-- BARRA INFERIOR NLE: PISTA DE AUDIO Y TIMELINE EN TIEMPO REAL -->
+        <div class="project-timeline-dock" id="project-timeline-dock">
+          <!-- PESTAÑA FLOTANTE GOTA DE AGUA CON REFRACCIÓN REAL -->
+          <div class="liquid-framing-popover" id="framing-popover" hidden aria-live="polite">
+            <span class="water-drop-caustic" aria-hidden="true"></span>
+            <div class="liquid-popover-head">
+              <div class="liquid-popover-badges">
+                <span class="liquid-chip" id="popover-clip-num">#01</span>
+                <span class="liquid-layout-pill" id="popover-layout-pill">Encuadre IA</span>
+                <span class="liquid-stage-pill" id="popover-stage-pill">Ciclo 1 / 3</span>
+              </div>
+              <strong class="liquid-popover-title" id="popover-clip-title">Analizando encuadre…</strong>
+              <button type="button" class="liquid-popover-close" id="close-framing-popover" aria-label="Cerrar vista de encuadre">
+                <svg><use href="#i-close"/></svg>
+              </button>
+            </div>
+            <div class="liquid-popover-body">
+              <div class="popover-morph-stage" id="popover-morph-stage">
+                <video id="popover-source-video" muted loop playsinline preload="auto" hidden></video>
+                <canvas class="popover-morph-canvas" id="popover-morph-canvas"></canvas>
+                <div class="popover-morph-hud" aria-hidden="true">
+                  <span class="morph-phase-pill" id="popover-morph-phase">01 · DETECTANDO ESCENA 16:9</span>
+                  <span class="morph-cycle-dots" id="popover-cycle-dots">
+                    <i class="is-active"></i><i></i><i></i>
+                  </span>
+                </div>
+              </div>
+            </div>
+            <p class="liquid-popover-reason" id="popover-reason"></p>
+            <div class="water-drop-timer-track" aria-hidden="true"><span class="water-drop-timer" id="water-drop-timer"></span></div>
+            <span class="liquid-popover-tail" id="framing-popover-tail" aria-hidden="true"></span>
+          </div>
+
+          <div class="timeline-header">
+            <div class="timeline-label">
+              <span class="timeline-icon"><svg><use href="#i-wave"/></svg></span>
+              <strong>Estación de Audio y Timeline</strong>
+              <span class="timeline-status-pill" id="audio-track-status">Esperando pista de audio</span>
+            </div>
+            <div class="timeline-meta">
+              <span id="audio-track-meta">Sin segmentos aún</span>
+              <span class="timeline-duration" id="audio-track-duration">00:00</span>
+            </div>
+          </div>
+
+          <div class="timeline-ruler" id="timeline-ruler" aria-hidden="true"></div>
+
+          <div class="timeline-studio-grid">
+            <div class="track-headers" aria-hidden="true">
+              <div class="track-tag"><span>V1</span>Vídeo</div>
+              <div class="track-tag is-audio"><span>A1</span>Audio GPU</div>
+              <div class="track-tag is-clips"><span>C1</span>Cortes</div>
+            </div>
+
+            <div class="timeline-track" id="project-timeline" role="slider" aria-label="Línea de tiempo del proyecto" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" tabindex="0">
+              <div class="timeline-scan" id="timeline-scan" aria-hidden="true"></div>
+              <div class="waveform-laser-head" id="waveform-laser-head" aria-hidden="true"></div>
+              <div class="viral-search-scanner" id="viral-search-scanner" hidden aria-hidden="true">
+                <div class="scanner-beam"></div>
+                <div class="scanner-reticle">
+                  <span class="scanner-pulse"></span>
+                  <span class="scanner-tag" id="viral-scanner-tag">BUSCANDO CLIPS VIRALES…</span>
+                </div>
+              </div>
+              <div class="timeline-waveform" id="project-waveform" aria-hidden="true"></div>
+              <div class="timeline-segments" id="project-voice-segments" aria-hidden="true"></div>
+              <div class="timeline-playhead" id="timeline-playhead" aria-hidden="true">
+                <span class="playhead-cap"></span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <!-- VENTANA LATERAL DERECHA: PUBLICACIÓN AUTOMÁTICA -->
+  <aside id="auto-publish-drawer" class="publish-drawer" aria-label="Clips listos para publicar" hidden>
+    <div class="publish-drawer-header">
+      <div class="publish-drawer-title">
+        <div>
+          <span class="drawer-eyebrow">Salida automática</span>
+          <h2>Publicar clips</h2>
+        </div>
+        <div class="drawer-header-controls">
+          <span class="drawer-count" id="drawer-clip-count">0 clips</span>
+          <button type="button" class="icon-close" id="close-publish-drawer" aria-label="Cerrar panel de publicación">
+            <svg><use href="#i-close"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="yt-channel-pill" id="yt-channel-pill">Comprobando canal de YouTube…</div>
+      <div class="publish-batch-options">
+        <label class="publish-opt-row">
+          <span>Cadencia</span>
+          <select id="publish-interval">
+            <option value="1-first">1º ya · Resto cada 1h</option>
+            <option value="1-all">Todos cada 1 hora</option>
+            <option value="2-all">Todos cada 2 horas</option>
+            <option value="0">Todos públicos ya</option>
+          </select>
+        </label>
+        <label class="publish-opt-check">
+          <input type="checkbox" id="publish-reanalyze-seo" checked>
+          <span>Analizar 1 a 1 con IA + SEO pro</span>
+        </label>
+      </div>
+      <button type="button" class="publish-all-button" id="publish-all-auto">
+        <svg><use href="#i-rocket"/></svg>
+        <span>Publicar todos automático</span>
+      </button>
+      <p class="drawer-auto-note" id="drawer-auto-note" role="status"></p>
+    </div>
+    <div class="publish-drawer-list" id="drawer-clip-list"></div>
+  </aside>
+
+  <dialog class="publication-dialog" id="publication-dialog" aria-labelledby="publication-title">
+    <div class="publication-heading">
+      <div><h2 id="publication-title">Preparar publicación</h2><p id="publication-clip"></p></div>
+      <button type="button" class="top-link" id="publication-close">Cerrar</button>
+    </div>
+    <p class="publication-status" id="publication-status" role="status"></p>
+    <div class="publication-layout" id="publication-content" hidden>
+      <aside class="publication-preview" aria-label="Vista previa y vídeo original">
+        <video id="publication-video" controls playsinline preload="metadata" aria-label="Vista previa del recorte"></video>
+        <a id="publication-source" target="_blank" rel="noopener noreferrer"></a>
+        <a id="publication-publisher" target="_blank" rel="noopener noreferrer"></a>
+      </aside>
+      <form id="publication-form" class="publication-form">
+        <label>Plataforma
+          <select id="publication-platform">
+            <option value="youtube">YouTube Shorts</option>
+            <option value="tiktok">TikTok</option>
+          </select>
+        </label>
+        <dl class="publication-ideas" id="publication-ideas" hidden>
+          <dt>Consulta SEO</dt><dd id="publication-query"></dd>
+          <dt>Gancho en pantalla</dt><dd id="publication-hook"></dd>
+          <dt id="publication-cover-dt" hidden>Texto portada</dt><dd id="publication-cover" hidden></dd>
+          <dt id="publication-comment-dt" hidden>Comentario fijado</dt><dd id="publication-comment" hidden></dd>
+          <dt id="publication-keywords-dt" hidden>Keywords SEO</dt><dd id="publication-keywords" class="seo-keyword-list" hidden></dd>
+          <dt id="publication-seo-dt" hidden>Índice SEO</dt><dd id="publication-seo-score" hidden></dd>
+        </dl>
+        <label id="publication-title-field">Título del Short
+          <input id="publication-video-title" type="text" maxlength="100" required>
+        </label>
+        <label><span id="publication-text-label">Descripción</span>
+          <textarea id="publication-text" rows="3" required></textarea>
+        </label>
+        <label>Hashtags <span class="publication-hint">Hasta 5, separados por espacios</span>
+          <input id="publication-tags" type="text" maxlength="220">
+        </label>
+        <div class="publication-actions">
+          <button type="button" class="top-link" id="publication-copy">Copiar texto</button>
+          <button type="button" class="top-link" id="publication-copy-seo">Copiar SEO completo</button>
+          <button type="submit" class="primary" id="publication-save">Guardar borrador</button>
+        </div>
+        <div class="publication-upload">
+          <button type="button" class="top-link" id="publication-upload" disabled>Subir vídeo</button>
+          <p id="publication-platform-note" class="publication-hint"></p>
+        </div>
+      </form>
+    </div>
+  </dialog>
+</body>
+</html>
