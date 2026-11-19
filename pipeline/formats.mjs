@@ -28,6 +28,11 @@ export function containOffsetY(containerHeight, contentHeight, role = 'bottom') 
   return Math.max(0, even(Math.max(0, containerHeight - contentHeight) * factor));
 }
 
+export function insetTitleReserve(format) {
+  const [width, height] = outputSize(format);
+  return even(192 * Math.min(width / 1080, height / 1920));
+}
+
 export function layoutPanels(layout, ratio) {
   const [width, height] = sizes[ratio];
   const midX = even(width / 2);
@@ -66,7 +71,7 @@ function windowCrop(width, height, points) {
 
 const cropAspect = (aspect, points) => windowCrop(`min(iw,ih*${aspect})`, `min(ih,iw/${aspect})`, points);
 
-export function compositionGraph(plan, format) {
+export function compositionGraph(plan, format, { reserveInsetTitle = false } = {}) {
   const [width, height] = sizes[format.ratio];
   const layout = plan.layout ?? (plan.mode === 'follow' ? 'fill' : 'fit');
   const tracks = plan.tracks ?? [plan.points?.map((point) => ({ ...point, x: point.center, y: 0.5 })) ?? []];
@@ -94,7 +99,10 @@ export function compositionGraph(plan, format) {
     const crop = windowCrop(`iw*${decimal(regionWidth)}`, `ih*${decimal(regionHeight)}`, points);
     const visibleHeight = h - headingSpace;
     const yFactor = index === 0 ? CONTAIN_Y_FACTORS.top : CONTAIN_Y_FACTORS.bottom;
-    return `[in${index}]${crop},split[blur${index}][sharp${index}];[blur${index}]scale=${w}:${visibleHeight}:force_original_aspect_ratio=increase,crop=${w}:${visibleHeight},boxblur=16:2,eq=brightness=-0.20[canvas${index}];[sharp${index}]scale=${w}:${visibleHeight}:force_original_aspect_ratio=decrease:force_divisible_by=2[visible${index}];[canvas${index}][visible${index}]overlay=(W-w)/2:trunc((H-h)*${yFactor}/2)*2,pad=${w}:${h}:0:${headingSpace}:color=0x171820,setsar=1[tile${index}]`;
+    const titleReserve = reserveInsetTitle && index === 1 ? insetTitleReserve(format) : 0;
+    const naturalOffset = `trunc((H-h)*${yFactor}/2)*2`;
+    const offset = titleReserve ? `'max(${titleReserve},${naturalOffset})'` : naturalOffset;
+    return `[in${index}]${crop},split[blur${index}][sharp${index}];[blur${index}]scale=${w}:${visibleHeight}:force_original_aspect_ratio=increase,crop=${w}:${visibleHeight},boxblur=16:2,eq=brightness=-0.20[canvas${index}];[sharp${index}]scale=${w}:${visibleHeight - titleReserve}:force_original_aspect_ratio=decrease:force_divisible_by=2[visible${index}];[canvas${index}][visible${index}]overlay=(W-w)/2:${offset},pad=${w}:${h}:0:${headingSpace}:color=0x171820,setsar=1[tile${index}]`;
   });
   const stack = panels.map((_, index) => `[tile${index}]`).join('');
   const positions = panels.map(({ x, y }) => `${x}_${y}`).join('|');

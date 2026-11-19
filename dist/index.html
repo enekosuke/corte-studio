@@ -118,6 +118,9 @@
               <button type="button" class="mode-switch-btn" id="mode-prototype-btn" data-mode="prototype" role="radio" aria-checked="false">
                 Vídeo prototipo <span class="mode-tag">Voz IA · ≤30s</span>
               </button>
+              <button type="button" class="mode-switch-btn" id="mode-summary-btn" data-mode="summary" role="radio" aria-checked="false">
+                Resumen <span class="mode-tag">Largo · 16:9</span>
+              </button>
             </div>
           </div>
 
@@ -142,6 +145,22 @@
               </label>
               <label id="voice-model-field" hidden>Voz locutor
                 <select id="source-voice" name="voice"></select>
+              </label>
+              <label id="summary-target-field" hidden>Duración del resumen
+                <select id="summary-target" name="targetMinutes">
+                  <option value="0">Automática (≈ 25 %)</option>
+                  <option value="3">3 min</option>
+                  <option value="5">5 min</option>
+                  <option value="10">10 min</option>
+                  <option value="15">15 min</option>
+                  <option value="20">20 min</option>
+                  <option value="30">30 min</option>
+                  <option value="45">45 min</option>
+                </select>
+              </label>
+              <label id="summary-captions-field" class="inline-check" hidden>
+                <input type="checkbox" id="summary-captions" checked>
+                <span>Subtítulos grabados</span>
               </label>
             </div>
 
@@ -217,6 +236,10 @@
             <button type="button" class="resume-job-btn" id="resume-job" hidden>
               <svg><use href="#i-sparkles"/></svg>
               <span id="resume-job-label">Terminar vídeo</span>
+            </button>
+            <button type="button" class="resume-job-btn" id="search-more-clips" hidden>
+              <svg><use href="#i-sparkles"/></svg>
+              <span>Buscar más clips</span>
             </button>
             <button type="button" class="top-link project-drawer-btn" id="open-publish-drawer" hidden>
               <svg><use href="#i-rocket"/></svg>
@@ -336,6 +359,22 @@
               <span id="job-clip-count" class="inspector-count">0 clips</span>
             </div>
 
+            <section class="summary-panel" id="summary-panel" hidden aria-label="Resumen del vídeo">
+              <div class="summary-hero">
+                <div class="summary-hero-time">
+                  <strong id="summary-output">--:--</strong>
+                  <span id="summary-source-label">de --:--</span>
+                </div>
+                <span class="summary-keep" id="summary-keep"></span>
+              </div>
+              <div class="summary-bar" aria-hidden="true"><span id="summary-bar-fill"></span></div>
+              <p class="summary-phase" id="summary-phase" role="status"></p>
+              <div class="summary-progress" id="summary-progress" hidden aria-hidden="true"><span id="summary-progress-fill"></span></div>
+              <ul class="summary-stats" id="summary-stats"></ul>
+              <h3 class="summary-subtitle" id="summary-chapters-title" hidden>Capítulos</h3>
+              <ol class="summary-chapters" id="summary-chapters"></ol>
+            </section>
+
             <details id="transcripcion-real" class="job-transcript" hidden>
               <summary>Transcripción del proyecto <span id="job-transcript-count"></span></summary>
               <div class="job-transcript-list" id="job-transcript" tabindex="0" role="region" aria-label="Transcripción del vídeo"></div>
@@ -399,7 +438,7 @@
             <div class="track-headers" aria-hidden="true">
               <div class="track-tag"><span>V1</span>Vídeo</div>
               <div class="track-tag is-audio"><span>A1</span>Audio GPU</div>
-              <div class="track-tag is-clips"><span>C1</span>Cortes</div>
+              <div class="track-tag is-clips" id="track-clips-tag"><span>C1</span>Cortes</div>
             </div>
 
             <div class="timeline-track" id="project-timeline" role="slider" aria-label="Línea de tiempo del proyecto" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" tabindex="0">
@@ -430,7 +469,7 @@
       <div class="publish-drawer-title">
         <div>
           <span class="drawer-eyebrow">Salida automática</span>
-          <h2>Publicar clips</h2>
+          <h2 id="drawer-title">Publicar clips</h2>
         </div>
         <div class="drawer-header-controls">
           <span class="drawer-count" id="drawer-clip-count">0 clips</span>
@@ -442,22 +481,27 @@
       <div class="yt-channel-pill" id="yt-channel-pill">Comprobando canal de YouTube…</div>
       <div class="publish-batch-options">
         <label class="publish-opt-row">
+          <span>Canal de YouTube</span>
+          <select id="publish-channel" disabled></select>
+        </label>
+        <button type="button" class="top-link" id="youtube-connect-channel" disabled>Conectar otro canal</button>
+        <label class="publish-opt-row" id="publish-interval-row">
           <span>Cadencia</span>
           <select id="publish-interval">
             <option value="1-first">1º ya · Resto cada 1h</option>
-            <option value="1-all">Todos cada 1 hora</option>
-            <option value="2-all">Todos cada 2 horas</option>
+            <option value="1-all">Añadir a la cola · Cada 1 hora</option>
+            <option value="2-all">Añadir a la cola · Cada 2 horas</option>
             <option value="0">Todos públicos ya</option>
           </select>
         </label>
-        <label class="publish-opt-check">
+        <label class="publish-opt-check" id="publish-reanalyze-row">
           <input type="checkbox" id="publish-reanalyze-seo" checked>
           <span>Analizar 1 a 1 con IA + SEO pro</span>
         </label>
       </div>
       <button type="button" class="publish-all-button" id="publish-all-auto">
         <svg><use href="#i-rocket"/></svg>
-        <span>Publicar todos automático</span>
+        <span id="publish-all-label">Publicar todos automático</span>
       </button>
       <p class="drawer-auto-note" id="drawer-auto-note" role="status"></p>
     </div>
@@ -491,7 +535,7 @@
           <dt id="publication-keywords-dt" hidden>Keywords SEO</dt><dd id="publication-keywords" class="seo-keyword-list" hidden></dd>
           <dt id="publication-seo-dt" hidden>Índice SEO</dt><dd id="publication-seo-score" hidden></dd>
         </dl>
-        <label id="publication-title-field">Título del Short
+        <label id="publication-title-field"><span id="publication-title-label">Título del Short</span>
           <input id="publication-video-title" type="text" maxlength="100" required>
         </label>
         <label><span id="publication-text-label">Descripción</span>
@@ -506,11 +550,15 @@
           <button type="submit" class="primary" id="publication-save">Guardar borrador</button>
         </div>
         <div class="publication-upload">
+          <label id="publication-channel-field">Canal de YouTube
+            <select id="publication-channel" disabled></select>
+          </label>
           <button type="button" class="top-link" id="publication-upload" disabled>Subir vídeo</button>
           <p id="publication-platform-note" class="publication-hint"></p>
         </div>
       </form>
     </div>
   </dialog>
+  <script src="/pro-studio.js" defer></script>
 </body>
 </html>

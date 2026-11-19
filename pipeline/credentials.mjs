@@ -34,6 +34,11 @@ export async function encryptGeminiKey(key) {
 }
 
 async function loadDpapiKey(file, envName) {
+  // DPAPI solo existe en Windows: en Linux y macOS se lee la clave del entorno (.env) sin ruido en consola.
+  if (process.platform !== 'win32') {
+    const environmentKey = process.env[envName]?.trim() ?? '';
+    return geminiKeyPattern.test(environmentKey) ? environmentKey : null;
+  }
   let encrypted;
   try {
     encrypted = (await readFile(file, 'utf8')).trim();

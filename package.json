@@ -8,6 +8,6 @@
   },
   "scripts": {
     "start": "node server.mjs",
-    "test": "node --test tests/studio.test.mjs"
+    "test": "node --import ./tests/setup.mjs --test --test-concurrency=1 tests/studio.test.mjs tests/summary.test.mjs tests/export.test.mjs tests/brands.test.mjs tests/storage.test.mjs tests/clipfx.test.mjs tests/audio.test.mjs tests/asd.test.mjs tests/tailnet-proxy.test.mjs tests/unlimited.test.mjs tests/download.test.mjs tests/v3-features.test.mjs tests/v4-pro.test.mjs"
   }
 }

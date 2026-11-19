@@ -1,0 +1,2 @@
+Sonidos generados proceduralmente con FFmpeg por scripts/generate-sfx.mjs.
+No contienen muestras de terceros. Dedicados al dominio público (CC0 1.0).

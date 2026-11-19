@@ -1,17 +1,37 @@
 import { createServer } from 'node:http';
 import { createReadStream } from 'node:fs';
-import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
-import { join } from 'node:path';
+import { createHash, randomBytes } from 'node:crypto';
+import { basename, dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { setTimeout as delay } from 'node:timers/promises';
 import { RequestError } from './errors.mjs';
 import { getJob, jobDirectory, readCheckpoint } from './jobs.mjs';
 import { dataDir } from './media.mjs';
+import { getBrand } from './brands.mjs';
+import { renameWithRetry } from './fsx.mjs';
 import { analyzeAndSaveClipSeo, inferGameContext } from './publication.mjs';
 
 export const clientSecretPath = join(dataDir, 'youtube-client-secret.json');
 export const tokenPath = join(dataDir, 'youtube-token.json');
+const channelsDir = join(dataDir, 'youtube-channels');
+const channelIdPattern = /^UC[A-Za-z0-9_-]{22}$/;
 const UPLOAD_SCOPE = 'https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly';
+const hour = 3_600_000;
+let publicationTail = Promise.resolve();
+
+async function withPublicationQueue(publish) {
+  const previous = publicationTail;
+  let release;
+  publicationTail = new Promise((resolve) => { release = resolve; });
+  try {
+    await previous;
+    return await publish();
+  } finally {
+    release();
+  }
+}
 
 async function loadClientCredentials(customSecretPath = clientSecretPath) {
   let raw;
@@ -42,7 +62,7 @@ async function loadClientCredentials(customSecretPath = clientSecretPath) {
 
 function openBrowserUrl(url) {
   if (process.platform === 'win32') {
-    execFile('cmd.exe', ['/c', 'start', '', url], { windowsHide: true }, () => {});
+    execFile('rundll32.exe', ['url.dll,FileProtocolHandler', url], { windowsHide: true }, () => {});
   } else if (process.platform === 'darwin') {
     execFile('open', [url], () => {});
   } else {
@@ -68,8 +88,10 @@ function pickLocalRedirect(creds) {
   return { hostname: '127.0.0.1', port: 0, pathname: '/', exactUri: null };
 }
 
-async function authorizeInteractive(creds, loginHint) {
+async function authorizeInteractive(creds, loginHint, { open = true } = {}) {
   const target = pickLocalRedirect(creds);
+  const state = randomBytes(32).toString('base64url');
+  const verifier = randomBytes(32).toString('base64url');
   let server;
   const { code, redirectUri } = await new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -80,7 +102,7 @@ async function authorizeInteractive(creds, loginHint) {
     let boundUri = target.exactUri;
     server = createServer((req, res) => {
       const reqUrl = new URL(req.url, `http://${target.hostname}:${target.port || 80}`);
-      if (target.pathname !== '/' && reqUrl.pathname !== target.pathname) {
+      if (req.method !== 'GET' || reqUrl.pathname !== target.pathname || reqUrl.searchParams.get('state') !== state) {
         res.writeHead(404);
         return res.end('Not found');
       }
@@ -88,8 +110,8 @@ async function authorizeInteractive(creds, loginHint) {
       const authError = reqUrl.searchParams.get('error');
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(authCode
-        ? '<h2>Autorización de Corte Studio completada. Ya puedes cerrar esta pestaña.</h2>'
-        : `<h2>Autorización cancelada (${authError || 'error'}).</h2>`);
+        ? '<h2>Corte Studio ha recibido la autorización de Google.</h2>'
+        : '<h2>Autorización cancelada.</h2>');
       clearTimeout(timer);
       server.close();
       if (authCode) resolve({ code: authCode, redirectUri: boundUri });
@@ -108,10 +130,13 @@ async function authorizeInteractive(creds, loginHint) {
       authUrl.searchParams.set('response_type', 'code');
       authUrl.searchParams.set('scope', UPLOAD_SCOPE);
       authUrl.searchParams.set('access_type', 'offline');
-      authUrl.searchParams.set('prompt', 'consent');
+      authUrl.searchParams.set('prompt', loginHint ? 'consent' : 'select_account consent');
+      authUrl.searchParams.set('state', state);
+      authUrl.searchParams.set('code_challenge', createHash('sha256').update(verifier).digest('base64url'));
+      authUrl.searchParams.set('code_challenge_method', 'S256');
       if (loginHint) authUrl.searchParams.set('login_hint', loginHint);
       console.error(`CORTE_AUTH_URL:${authUrl.toString()}`);
-      openBrowserUrl(authUrl.toString());
+      if (open) openBrowserUrl(authUrl.toString());
     });
   });
 
@@ -124,21 +149,20 @@ async function authorizeInteractive(creds, loginHint) {
       client_secret: creds.client_secret,
       redirect_uri: redirectUri,
       grant_type: 'authorization_code',
+      code_verifier: verifier,
     }),
   });
   const tokens = await tokenRes.json();
   if (!tokenRes.ok || !tokens.access_token) {
     throw new RequestError(401, `No se pudo intercambiar el código OAuth: ${tokens.error_description || tokens.error || tokenRes.status}`);
   }
-  const saved = { ...tokens, obtainedAt: Date.now() };
-  await mkdir(dataDir, { recursive: true });
-  await writeFile(tokenPath, JSON.stringify(saved, null, 2), 'utf8');
-  return saved;
+  return { ...tokens, clientId: creds.client_id, obtainedAt: Date.now() };
 }
 
-async function getAccessToken(customSecretPath = clientSecretPath, loginHint) {
+async function getAccessToken(customSecretPath = clientSecretPath, loginHint, { savedPath = tokenPath, interactive = true } = {}) {
   const creds = await loadClientCredentials(customSecretPath);
-  const existing = await readFile(tokenPath, 'utf8').then((s) => JSON.parse(s)).catch(() => null);
+  const saved = await readFile(savedPath, 'utf8').then((s) => JSON.parse(s)).catch(() => null);
+  const existing = saved?.clientId && saved.clientId !== creds.client_id ? null : saved;
   const validUntil = existing?.expiry_date ?? (existing?.obtainedAt ? existing.obtainedAt + (existing.expires_in || 3500) * 1000 : 0);
   if (existing?.access_token && (validUntil - 60_000) > Date.now()) {
     return existing.access_token;
@@ -157,12 +181,129 @@ async function getAccessToken(customSecretPath = clientSecretPath, loginHint) {
     const refreshed = await res.json();
     if (res.ok && refreshed.access_token) {
       const merged = { ...existing, ...refreshed, obtainedAt: Date.now() };
-      await writeFile(tokenPath, JSON.stringify(merged, null, 2), 'utf8');
+      delete merged.expiry_date;
+      await writeUploadJson(savedPath, merged);
       return merged.access_token;
     }
   }
+  if (!interactive) throw new RequestError(401, 'Vuelve a autorizar este canal de YouTube.');
   const fresh = await authorizeInteractive(creds, loginHint);
+  await mkdir(dataDir, { recursive: true });
+  await writeUploadJson(savedPath, fresh);
   return fresh.access_token;
+}
+
+function channelFiles(channelId) {
+  if (!channelIdPattern.test(channelId)) throw new RequestError(400, 'El identificador del canal de YouTube no es válido.');
+  const directory = join(channelsDir, channelId);
+  return { directory, credentials: join(directory, 'youtube-client-secret.json'), token: join(directory, 'youtube-token.json') };
+}
+
+async function resolveUploadChannel(channelId, { includeUploads = false, secretPath = clientSecretPath, loginHint } = {}) {
+  const profile = channelId ? channelFiles(channelId) : null;
+  const saved = profile && await readCheckpoint(profile.directory, 'youtube-token.json');
+  const accessToken = saved
+    ? await getAccessToken(profile.credentials, undefined, { savedPath: profile.token, interactive: false })
+    : await getAccessToken(secretPath, loginHint, { interactive: !channelId });
+  const channel = await describeChannel(accessToken, { includeUploads });
+  if (channelId && channel.channelId !== channelId) {
+    throw new RequestError(409, 'La autorización no corresponde al canal elegido. Selecciona o conecta el canal correcto.');
+  }
+  return { ...channel, accessToken };
+}
+
+async function describeChannel(token, { includeUploads = false } = {}) {
+  const part = includeUploads ? 'snippet,contentDetails' : 'snippet';
+  const response = await fetch(`https://www.googleapis.com/youtube/v3/channels?part=${part}&mine=true`, {
+    headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(15_000),
+  });
+  if (!response.ok) throw new RequestError(502, `YouTube no pudo verificar el canal (HTTP ${response.status}).`);
+  const item = (await response.json()).items?.[0];
+  if (!item?.id) throw new RequestError(401, 'No se encontró un canal de YouTube asociado a la autorización.');
+  return {
+    channelId: item.id, title: item.snippet?.title || 'YouTube', handle: item.snippet?.customUrl || '',
+    ...(includeUploads ? { uploadsPlaylistId: item.contentDetails?.relatedPlaylists?.uploads } : {}),
+  };
+}
+
+export async function getLatestScheduledUpload(token, uploadsPlaylistId, { now = Date.now(), signal, fetcher = fetch } = {}) {
+  if (!uploadsPlaylistId) throw new RequestError(502, 'YouTube no devolvió la lista de subidas del canal.');
+  const read = async (resource, params) => {
+    const timeout = AbortSignal.timeout(15_000);
+    const response = await fetcher(`https://www.googleapis.com/youtube/v3/${resource}?${new URLSearchParams(params)}`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+    });
+    if (!response.ok) throw new RequestError(502, `No se pudo comprobar la cola del canal de YouTube (HTTP ${response.status}).`);
+    return response.json();
+  };
+  let latest = null;
+  let pageToken;
+  do {
+    const page = await read('playlistItems', {
+      part: 'contentDetails', playlistId: uploadsPlaylistId, maxResults: '50',
+      fields: 'nextPageToken,items(contentDetails/videoId)', ...(pageToken ? { pageToken } : {}),
+    });
+    const ids = (page.items ?? []).map((item) => item.contentDetails?.videoId).filter(Boolean);
+    if (ids.length) {
+      const videos = await read('videos', { part: 'status', id: ids.join(','), fields: 'items(status(privacyStatus,publishAt))' });
+      for (const { status } of videos.items ?? []) {
+        const time = Date.parse(status?.publishAt);
+        if (status?.privacyStatus === 'private' && time > now && time > (latest ?? now)) latest = time;
+      }
+    }
+    pageToken = page.nextPageToken;
+  } while (pageToken);
+  return latest;
+}
+
+export function nextPublishDate({ intervalHours, latest = null, startAtIso, now = Date.now() }) {
+  const defaultStart = Math.ceil((now + 15 * 60_000) / hour) * hour;
+  const requestedStart = startAtIso ? Date.parse(startAtIso) : defaultStart;
+  if (!Number.isFinite(requestedStart)) throw new RequestError(400, 'La fecha de inicio de publicación no es válida.');
+  const afterQueue = latest === null ? 0 : latest + intervalHours * hour;
+  return new Date(Math.max(now + 15 * 60_000, requestedStart, afterQueue)).toISOString();
+}
+
+async function verifyNewConnection(secretPath) {
+  const credentials = await loadClientCredentials(secretPath);
+  const tokens = await authorizeInteractive(credentials, undefined, { open: false });
+  const channel = await describeChannel(tokens.access_token);
+  const staging = await mkdtemp(join(dataDir, 'youtube-connection-'));
+  await copyFile(secretPath, join(staging, 'youtube-client-secret.json'));
+  await writeFile(join(staging, 'youtube-token.json'), JSON.stringify({ ...tokens, channelId: channel.channelId }, null, 2), 'utf8');
+  return { ...channel, staging };
+}
+
+async function storeChannel(channel, secretPath, tokens) {
+  const profile = channelFiles(channel.channelId);
+  await mkdir(profile.directory, { recursive: true });
+  // Commit credentials before writing the token used to discover the profile.
+  await writeUploadJson(profile.credentials, JSON.parse(await readFile(secretPath, 'utf8')));
+  await writeUploadJson(profile.token, { ...tokens, channelId: channel.channelId });
+  return channel;
+}
+
+let channelConnection = { running: false };
+export function getYouTubeChannelConnection() {
+  return channelConnection;
+}
+
+export function connectYouTubeChannel() {
+  if (channelConnection.running) return channelConnection;
+  channelConnection = { running: true, message: 'Autoriza el canal en el navegador del PC que aloja Corte Studio.' };
+  void (async () => {
+    try {
+      const creds = await loadClientCredentials();
+      const tokens = await authorizeInteractive(creds);
+      const channel = await describeChannel(tokens.access_token);
+      await storeChannel(channel, clientSecretPath, tokens);
+      channelConnection = { running: false, channel, message: `Canal conectado: ${channel.title}.` };
+    } catch (error) {
+      channelConnection = { running: false, error: error.status ? error.message : 'No se pudo conectar el canal de YouTube.' };
+    }
+  })();
+  return channelConnection;
 }
 
 /**
@@ -177,52 +318,25 @@ export async function getJobUploads(directory) {
  * for uploading without prompting, resolving the active channel title & handle.
  */
 export async function getYouTubeConnectionStatus(customSecretPath = clientSecretPath) {
-  let creds;
+  let legacy;
+  let reason;
+  let hasCredentials = false;
   try {
-    creds = await loadClientCredentials(customSecretPath);
+    await loadClientCredentials(customSecretPath);
+    hasCredentials = true;
+    legacy = await describeChannel(await getAccessToken(customSecretPath, undefined, { interactive: false }));
   } catch (err) {
-    return { connected: false, hasCredentials: false, reason: err.message };
+    reason = err.status ? err.message : 'No se pudo comprobar la conexión con YouTube.';
   }
-  const existing = await readFile(tokenPath, 'utf8').then((s) => JSON.parse(s)).catch(() => null);
-  if (!existing?.refresh_token && !existing?.access_token) {
-    return { connected: false, hasCredentials: true, reason: 'Falta autorizar el canal de YouTube.' };
-  }
-  try {
-    let token = existing.access_token;
-    const validUntil = existing?.expiry_date ?? (existing?.obtainedAt ? existing.obtainedAt + (existing.expires_in || 3500) * 1000 : 0);
-    if (!token || (validUntil - 60_000) <= Date.now()) {
-      const res = await fetch(creds.token_uri || 'https://oauth2.googleapis.com/token', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({
-          refresh_token: existing.refresh_token,
-          client_id: creds.client_id,
-          client_secret: creds.client_secret,
-          grant_type: 'refresh_token',
-        }),
-      });
-      const refreshed = await res.json();
-      if (!res.ok || !refreshed.access_token) {
-        return { connected: false, hasCredentials: true, reason: 'La sesión OAuth de YouTube ha caducado.' };
-      }
-      token = refreshed.access_token;
-      await writeFile(tokenPath, JSON.stringify({ ...existing, ...refreshed, obtainedAt: Date.now() }, null, 2), 'utf8');
-    }
-    const ch = await fetch('https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true', {
-      headers: { Authorization: `Bearer ${token}` },
-    }).then((r) => r.json());
-    const item = ch.items?.[0];
-    if (!item?.id) return { connected: false, hasCredentials: true, reason: 'No se encontró canal asociado.' };
-    return {
-      connected: true,
-      hasCredentials: true,
-      channelId: item.id,
-      title: item.snippet?.title || 'YouTube',
-      handle: item.snippet?.customUrl || '',
-    };
-  } catch (err) {
-    return { connected: false, hasCredentials: true, reason: err.message };
-  }
+  const directories = await readdir(channelsDir, { withFileTypes: true }).catch(() => []);
+  const registered = await Promise.all(directories.filter((entry) => entry.isDirectory() && channelIdPattern.test(entry.name)).map(async ({ name }) => {
+    try {
+      const { accessToken: _token, ...channel } = await resolveUploadChannel(name);
+      return channel;
+    } catch { return null; }
+  }));
+  const channels = [...new Map([legacy, ...registered].filter(Boolean).map((channel) => [channel.channelId, channel])).values()];
+  return { connected: channels.length > 0, hasCredentials, channels, ...channels[0], ...(channels.length ? {} : { reason }) };
 }
 
 /**
@@ -231,14 +345,15 @@ export async function getYouTubeConnectionStatus(customSecretPath = clientSecret
 export function buildVideoMetadata(clip, seo, publishAtIso, draft, sourceTitle = '') {
   const yt = seo?.platforms?.youtube ?? {};
   const gameCtx = inferGameContext(sourceTitle, clip, yt.text || seo?.hook || '', seo?.game || '');
-  const rawTitle = draft?.title || yt.title || `${clip.title} #Shorts`;
-  const title = /#shorts/i.test(rawTitle) ? rawTitle.slice(0, 100) : `${rawTitle.slice(0, 91).trim()} #Shorts`;
+  const longForm = Boolean(clip.longForm);
+  const rawTitle = draft?.title || yt.title || (longForm ? clip.title : `${clip.title} #Shorts`);
+  const title = longForm || /#shorts/i.test(rawTitle) ? rawTitle.slice(0, 100) : `${rawTitle.slice(0, 91).trim()} #Shorts`;
   const draftTags = Array.isArray(draft?.hashtags) ? draft.hashtags.map((h) => String(h).replace(/^#/, '')) : [];
   const gameTags = (gameCtx?.hashtags ?? []).map((h) => h.replace(/^#/, ''));
   const ytTags = Array.isArray(yt.hashtags) ? yt.hashtags.map((h) => h.replace(/^#/, '')) : [];
   const orderedHashNames = [];
   const seenHash = new Set();
-  for (const tag of [...gameTags, ...(draftTags.length ? draftTags : ytTags), 'Shorts']) {
+  for (const tag of [...gameTags, ...(draftTags.length ? draftTags : ytTags), ...(longForm ? [] : ['Shorts'])]) {
     const clean = String(tag || '').replace(/^#/, '').trim();
     const key = clean.toLowerCase();
     if (clean && !seenHash.has(key)) {
@@ -280,43 +395,140 @@ export function buildVideoMetadata(clip, seo, publishAtIso, draft, sourceTitle =
   };
 }
 
-async function uploadSingleClip(accessToken, filePath, metadata) {
-  const { size } = await stat(filePath);
-  const initRes = await fetch('https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Type': 'application/json; charset=UTF-8',
-      'X-Upload-Content-Length': String(size),
-      'X-Upload-Content-Type': 'video/mp4',
-    },
-    body: JSON.stringify(metadata),
-  });
-  if (!initRes.ok) {
-    const errText = await initRes.text();
-    throw new RequestError(initRes.status, `YouTube API rechazó el inicio de subida: ${errText.slice(0, 300)}`);
-  }
-  const uploadUrl = initRes.headers.get('location');
-  if (!uploadUrl) throw new RequestError(502, 'YouTube API no devolvió cabecera Location para la subida resumible.');
+const retryableUploadStatus = new Set([408, 429, 500, 502, 503, 504]);
 
-  const putRes = await fetch(uploadUrl, {
-    method: 'PUT',
-    duplex: 'half',
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Type': 'video/mp4',
-      'Content-Length': String(size),
-    },
-    body: createReadStream(filePath),
-  });
-  const payload = await putRes.json().catch(() => ({}));
-  if (!putRes.ok || !payload.id) {
-    throw new RequestError(putRes.status, `Error al subir vídeo a YouTube API: ${JSON.stringify(payload).slice(0, 300)}`);
+async function uploadFailure(response, stage) {
+  const body = await response.text();
+  let reason;
+  try { reason = JSON.parse(body).error?.errors?.find(({ reason }) => reason === 'uploadLimitExceeded')?.reason; } catch {}
+  if (reason) {
+    return new RequestError(400, 'Este canal alcanzó el límite diario de subidas de YouTube. Los clips ya subidos se conservan. Vuelve a intentarlo en 24 horas.', reason);
   }
-  return payload;
+  return new RequestError(response.status, `YouTube rechazó ${stage} (HTTP ${response.status}): ${body.slice(0, 300)}`);
 }
 
-export async function uploadSingleClipWithSeo(jobId, clipFile, { infer, immediate = true, publishAtIso, forceSeo = false, signal } = {}) {
+async function writeUploadJson(path, value) {
+  const temporary = `${path}.${randomBytes(8).toString('hex')}.tmp`;
+  try {
+    await writeFile(temporary, JSON.stringify(value, null, 2), { encoding: 'utf8', mode: 0o600 });
+    await renameWithRetry(temporary, path);
+  } finally {
+    await rm(temporary, { force: true });
+  }
+}
+
+export async function uploadSingleClip(accessToken, filePath, metadata, { channelId, signal, fetcher = fetch, wait = delay } = {}) {
+  const { size, mtimeMs } = await stat(filePath);
+  if (!size) throw new RequestError(422, 'El archivo del clip está vacío.');
+  const legacyPath = `${filePath}.youtube-session.json`;
+  let sessionPath = channelIdPattern.test(channelId) ? `${filePath}.youtube-session-${channelId}.json` : legacyPath;
+  let session = await readCheckpoint(dirname(sessionPath), basename(sessionPath));
+  if (!session && sessionPath !== legacyPath) {
+    const legacy = await readCheckpoint(dirname(legacyPath), basename(legacyPath));
+    if (legacy?.channelId === channelId) {
+      session = legacy;
+      sessionPath = legacyPath;
+    }
+  }
+  if (session && (session.size !== size || session.mtimeMs !== mtimeMs || session.channelId !== channelId)) {
+    throw new RequestError(409, 'La sesión de subida corresponde a otro canal o a otra versión del clip.');
+  }
+  const auth = { Authorization: `Bearer ${accessToken}` };
+  let retries = 0;
+  let offset = 0;
+  let probe = Boolean(session);
+  const request = (url, options) => {
+    const timeout = AbortSignal.timeout(300_000);
+    return fetcher(url, { ...options, redirect: 'manual', signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
+  };
+  const pause = async (response, error) => {
+    const retryAfter = response?.headers.get('retry-after');
+    await response?.body?.cancel().catch(() => {});
+    signal?.throwIfAborted();
+    if (retries >= 5) {
+      const detail = error?.cause?.code || (response ? `HTTP ${response.status}` : error?.name || 'conexión');
+      throw new RequestError(502, `La subida a YouTube se interrumpió (${detail}). Puedes reanudar desde Publicación rápida.`);
+    }
+    const seconds = retryAfter && /^\d+$/.test(retryAfter) ? Number(retryAfter) : 0;
+    await wait(Math.min(30_000, Math.max(seconds * 1000, 1000 * 2 ** retries++)), undefined, { signal });
+  };
+
+  while (true) {
+    if (!session) {
+      let response;
+      try {
+        response = await request('https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status', {
+          method: 'POST', headers: { ...auth, 'Content-Type': 'application/json', 'X-Upload-Content-Length': String(size), 'X-Upload-Content-Type': 'video/mp4' },
+          body: JSON.stringify(metadata),
+        });
+      } catch (error) { await pause(null, error); continue; }
+      if (retryableUploadStatus.has(response.status)) { await pause(response); continue; }
+      if (!response.ok) throw await uploadFailure(response, 'el inicio de subida');
+      const location = response.headers.get('location');
+      await response.body?.cancel().catch(() => {});
+      if (!location) throw new RequestError(502, 'YouTube no devolvió una sesión de subida.');
+      session = { location, size, mtimeMs, channelId, metadata };
+      await writeUploadJson(sessionPath, session);
+      offset = 0;
+      probe = false;
+    }
+
+    const url = new URL(session.location);
+    if (url.protocol !== 'https:' || !['www.googleapis.com', 'upload.youtube.com'].includes(url.hostname)) throw new RequestError(502, 'YouTube devolvió una dirección de subida inesperada.');
+    const stream = probe ? undefined : createReadStream(filePath, { start: offset });
+    const range = probe ? `bytes */${size}` : `bytes ${offset}-${size - 1}/${size}`;
+    let response;
+    try {
+      response = await request(url, {
+        method: 'PUT', headers: { ...auth, 'Content-Range': range, 'Content-Length': String(probe ? 0 : size - offset), 'Content-Type': 'video/mp4' },
+        ...(stream ? { body: stream, duplex: 'half' } : { body: '' }),
+      });
+    } catch (error) {
+      await pause(null, error);
+      probe = true;
+      continue;
+    } finally { stream?.destroy(); }
+
+    if (retryableUploadStatus.has(response.status)) { await pause(response); probe = true; continue; }
+    if (response.status === 308) {
+      const accepted = response.headers.get('range');
+      const match = accepted && /^bytes=0-(\d+)$/.exec(accepted);
+      const received = match ? Number(match[1]) + 1 : 0;
+      if ((accepted && !match) || !Number.isSafeInteger(received) || received > size) throw new RequestError(502, 'YouTube devolvió un intervalo de subida inválido.');
+      // Recover completed uploads before replacing a stale slot on an incomplete upload.
+      const requestedDate = metadata.status.publishAt;
+      const savedDate = session.metadata.status.publishAt;
+      if (probe && received < size && requestedDate && (!savedDate || Date.parse(savedDate) < Date.parse(requestedDate))) {
+        await response.body?.cancel().catch(() => {});
+        session = null;
+        continue;
+      }
+      if (received <= offset && !probe) await pause(response);
+      else await response.body?.cancel().catch(() => {});
+      if (received > offset) retries = 0;
+      offset = received;
+      probe = offset === size;
+      if (probe) await pause();
+      continue;
+    }
+    if (response.status === 404) {
+      await pause(response);
+      session = null;
+      continue;
+    }
+    if (!response.ok) throw await uploadFailure(response, 'el clip');
+    const payload = await response.json().catch(() => null);
+    if (payload?.id) return { ...payload, publishedMetadata: session.metadata, sessionPath };
+    await pause();
+    probe = true;
+  }
+}
+
+export function uploadSingleClipWithSeo(jobId, clipFile, options) {
+  return withPublicationQueue(() => uploadProjectClip(jobId, clipFile, options));
+}
+
+async function uploadProjectClip(jobId, clipFile, { infer, immediate = true, publishAtIso, forceSeo = false, signal, channelId: selectedChannel } = {}) {
   const job = await getJob(jobId);
   if (!job) throw new RequestError(404, `No existe el proyecto ${jobId}.`);
   const directory = jobDirectory(job);
@@ -329,32 +541,40 @@ export async function uploadSingleClipWithSeo(jobId, clipFile, { infer, immediat
     return { file: clipFile, status: 'already_uploaded', ...existingLog[clipFile] };
   }
   const transcript = await readCheckpoint(directory, 'transcript.json');
-  const seo = await analyzeAndSaveClipSeo(infer, directory, job.title, transcript, clip, clipIndex + 1, { force: forceSeo, signal });
+  const seo = await analyzeAndSaveClipSeo(infer, directory, job.title, transcript, clip, clipIndex + 1, { force: forceSeo, signal, brand: await getBrand(job.brandId) });
   const draft = await readCheckpoint(directory, `${clipFile.slice(0, -4)}-youtube-draft.json`).catch(() => null);
   const effectivePublishAt = immediate ? undefined : (publishAtIso ?? new Date(Math.ceil((Date.now() + 15 * 60_000) / 3_600_000) * 3_600_000).toISOString());
   const metadata = buildVideoMetadata(clip, seo, effectivePublishAt, draft, job.title);
-  const accessToken = await getAccessToken();
-  const uploaded = await uploadSingleClip(accessToken, join(directory, clipFile), metadata);
+  const { accessToken, channelId, title: channelTitle } = await resolveUploadChannel(selectedChannel);
+  const uploaded = await uploadSingleClip(accessToken, join(directory, clipFile), metadata, { channelId, signal });
+  const actualPublishAt = uploaded.publishedMetadata.status.publishAt;
   const entry = {
     videoId: uploaded.id,
-    url: `https://youtube.com/shorts/${uploaded.id}`,
+    url: clip.longForm ? `https://youtube.com/watch?v=${uploaded.id}` : `https://youtube.com/shorts/${uploaded.id}`,
     studioUrl: `https://studio.youtube.com/video/${uploaded.id}/edit`,
-    title: metadata.snippet.title,
-    publishAt: effectivePublishAt ?? 'public',
-    privacyStatus: effectivePublishAt ? 'scheduled' : 'public',
+    channelId,
+    channelTitle,
+    title: uploaded.publishedMetadata.snippet.title,
+    publishAt: actualPublishAt ?? 'public',
+    privacyStatus: actualPublishAt ? 'scheduled' : 'public',
     seoScore: seo?.seoScore ?? null,
     uploadedAt: new Date().toISOString(),
   };
   existingLog[clipFile] = entry;
-  await writeFile(uploadLogPath, JSON.stringify(existingLog, null, 2), 'utf8');
+  await writeUploadJson(uploadLogPath, existingLog);
+  await rm(uploaded.sessionPath, { force: true }).catch(() => {});
   return { file: clipFile, status: 'uploaded', ...entry };
 }
 
 /**
  * Analyze each clip one-by-one (frames + spoken transcript) to produce pro SEO,
- * then upload and schedule them 1 hour apart (with optional immediate 1st clip).
+ * then append the scheduled clips to the connected channel's queue.
  */
-export async function publishAllClipsBatch(jobId, {
+export function publishAllClipsBatch(jobId, options) {
+  return withPublicationQueue(() => runPublicationBatch(jobId, options));
+}
+
+async function runPublicationBatch(jobId, {
   infer,
   intervalHours = 1,
   publishFirstImmediately = true,
@@ -365,6 +585,7 @@ export async function publishAllClipsBatch(jobId, {
   maxClips,
   signal,
   onProgress,
+  channelId: selectedChannel,
 } = {}) {
   const job = await getJob(jobId);
   if (!job) throw new RequestError(404, `No existe el proyecto ${jobId}.`);
@@ -372,12 +593,20 @@ export async function publishAllClipsBatch(jobId, {
   const transcript = await readCheckpoint(directory, 'transcript.json');
   const uploadLogPath = join(directory, 'youtube-uploads.json');
   const existingLog = await getJobUploads(directory);
-  const accessToken = await getAccessToken(secretPath, loginHint);
   const clips = (job.clips ?? []).slice(0, maxClips ?? (job.clips?.length ?? 0));
-  const baseDate = startAtIso
-    ? new Date(startAtIso)
-    : new Date(Math.ceil((Date.now() + 15 * 60_000) / 3_600_000) * 3_600_000);
+  const scheduled = (idx) => intervalHours > 0 && !(idx === 0 && publishFirstImmediately);
+  const hasScheduledClips = clips.some((clip, idx) => scheduled(idx) && !existingLog[clip.file]?.videoId);
+  signal?.throwIfAborted();
+  const { accessToken, channelId, title: channelTitle, uploadsPlaylistId } = await resolveUploadChannel(selectedChannel, {
+    includeUploads: hasScheduledClips, secretPath, loginHint,
+  });
+  let latest = null;
+  if (hasScheduledClips) {
+    onProgress?.({ phase: 'checking_schedule', message: 'Consultando la última publicación programada del canal…' });
+    latest = await getLatestScheduledUpload(accessToken, uploadsPlaylistId, { signal });
+  }
   const results = [];
+  const brand = await getBrand(job.brandId);
 
   for (const [idx, clip] of clips.entries()) {
     if (signal?.aborted) throw new RequestError(499, 'Publicación cancelada.', 'CANCELLED');
@@ -388,16 +617,10 @@ export async function publishAllClipsBatch(jobId, {
     }
 
     onProgress?.({ phase: 'seo', index: idx + 1, total: clips.length, file: clip.file, message: `Analizando clip ${idx + 1}/${clips.length} y creando SEO pro…` });
-    const seo = await analyzeAndSaveClipSeo(infer, directory, job.title, transcript, clip, idx + 1, { force: regenerateSeo, signal });
+    const seo = await analyzeAndSaveClipSeo(infer, directory, job.title, transcript, clip, idx + 1, { force: regenerateSeo, signal, brand });
     const draft = await readCheckpoint(directory, `${clip.file.slice(0, -4)}-youtube-draft.json`).catch(() => null);
 
-    let publishAtIso;
-    if (intervalHours > 0) {
-      const slotOffset = publishFirstImmediately ? Math.max(0, idx - 1) : idx;
-      if (!(idx === 0 && publishFirstImmediately)) {
-        publishAtIso = new Date(baseDate.getTime() + slotOffset * intervalHours * 3_600_000).toISOString();
-      }
-    }
+    const publishAtIso = scheduled(idx) ? nextPublishDate({ intervalHours, latest, startAtIso }) : undefined;
     const metadata = buildVideoMetadata(clip, seo, publishAtIso, draft, job.title);
 
     onProgress?.({
@@ -411,19 +634,24 @@ export async function publishAllClipsBatch(jobId, {
     });
 
     try {
-      const uploaded = await uploadSingleClip(accessToken, join(directory, clip.file), metadata);
+      const uploaded = await uploadSingleClip(accessToken, join(directory, clip.file), metadata, { channelId, signal });
+      const actualPublishAt = uploaded.publishedMetadata.status.publishAt;
+      if (actualPublishAt) latest = Math.max(latest ?? 0, Date.parse(actualPublishAt));
       const entry = {
         videoId: uploaded.id,
-        url: `https://youtube.com/shorts/${uploaded.id}`,
+        url: clip.longForm ? `https://youtube.com/watch?v=${uploaded.id}` : `https://youtube.com/shorts/${uploaded.id}`,
         studioUrl: `https://studio.youtube.com/video/${uploaded.id}/edit`,
-        title: metadata.snippet.title,
-        publishAt: publishAtIso ?? 'public',
-        privacyStatus: publishAtIso ? 'scheduled' : 'public',
+        channelId,
+        channelTitle,
+        title: uploaded.publishedMetadata.snippet.title,
+        publishAt: actualPublishAt ?? 'public',
+        privacyStatus: actualPublishAt ? 'scheduled' : 'public',
         seoScore: seo?.seoScore ?? null,
         uploadedAt: new Date().toISOString(),
       };
       existingLog[clip.file] = entry;
-      await writeFile(uploadLogPath, JSON.stringify(existingLog, null, 2), 'utf8');
+      await writeUploadJson(uploadLogPath, existingLog);
+      await rm(uploaded.sessionPath, { force: true }).catch(() => {});
       results.push({ file: clip.file, status: 'uploaded', ...entry });
       onProgress?.({ phase: 'uploaded', index: idx + 1, total: clips.length, file: clip.file, entry });
       console.error(`UPLOADED ${clip.file} -> ${entry.url} (publishAt: ${entry.publishAt})`);
@@ -436,6 +664,7 @@ export async function publishAllClipsBatch(jobId, {
         totalTracked: Object.keys(existingLog).length,
         stoppedAt: clip.file,
         stopError: uploadErr.message,
+        stopCode: uploadErr.code,
         results,
       };
     }
@@ -464,7 +693,28 @@ export async function uploadProjectToYouTube(jobId, { startAtIso, intervalHours 
   });
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href && process.argv[2] === '--import-channel') {
+  try {
+    if (!process.argv[3]) throw new Error('Indica la carpeta que contiene la autorización anterior.');
+    const credentials = join(process.argv[3], 'youtube-client-secret.json');
+    const savedPath = join(process.argv[3], 'youtube-token.json');
+    const token = await getAccessToken(credentials, undefined, { savedPath, interactive: false });
+    const channel = await describeChannel(token);
+    const stored = JSON.parse(await readFile(savedPath, 'utf8'));
+    if (stored.channelId && stored.channelId !== channel.channelId) throw new Error('El canal verificado no coincide con la autorización guardada.');
+    console.log(JSON.stringify(await storeChannel(channel, credentials, stored)));
+  } catch (error) {
+    console.error(error.status ? error.message : 'No se pudo importar la autorización anterior.');
+    process.exitCode = 1;
+  }
+} else if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href && process.argv[2] === '--connect') {
+  try {
+    console.log(JSON.stringify(await verifyNewConnection(process.argv[3] || clientSecretPath)));
+  } catch (error) {
+    console.error(error.message);
+    process.exitCode = 1;
+  }
+} else if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const jobId = process.argv[2];
   if (!jobId) {
     console.error('Uso: node pipeline/youtube_upload.mjs <jobId> [intervalHours] [startAtIso] [loginHint]');

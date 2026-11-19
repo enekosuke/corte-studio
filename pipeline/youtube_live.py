@@ -58,6 +58,7 @@ def main() -> int:
     parser.add_argument("out_dir")
     parser.add_argument("ffmpeg_dir")
     parser.add_argument("--max-fragments", type=int, default=0)
+    parser.add_argument("--concurrency", type=int, default=4, help="fragmentos descargados a la vez (1 evita carreras de archivos en Windows)")
     args = parser.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
@@ -85,7 +86,7 @@ def main() -> int:
         "no_warnings": True,
         "noprogress": True,
         "live_from_start": True,
-        "concurrent_fragment_downloads": 6,
+        "concurrent_fragment_downloads": max(1, min(16, args.concurrency)),
         "retries": 8,
         "fragment_retries": 8,
         "skip_unavailable_fragments": True,
@@ -138,6 +139,7 @@ def main() -> int:
         print("\nCORTE_LIVE_META:" + json.dumps({
             "ok": True,
             "title": title,
+            "channel": info.get("channel") or info.get("uploader"),
             "isLive": True,
             "startSeq": start_seq,
             "endSeq": end_seq,

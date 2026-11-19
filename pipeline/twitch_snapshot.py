@@ -208,6 +208,7 @@ def main() -> int:
         return 3
 
     title = (override_title or info.get("title") or "Vídeo de Twitch").strip()
+    channel = info.get("channel") or info.get("uploader")
     is_live = bool(info.get("is_live")) or info.get("live_status") == "is_live"
     fmt = select_best_2k_format(info.get("formats") or [])
 
@@ -226,6 +227,7 @@ def main() -> int:
                     "targetUrl": target_url,
                     "vodId": vod_id or info.get("id"),
                     "title": title,
+                    "channel": channel,
                     "isLive": True,
                     "segments": segments,
                     "elapsedSeconds": elapsed,
@@ -242,6 +244,7 @@ def main() -> int:
         "downloadUrl": target_url,
         "vodId": vod_id or info.get("id"),
         "title": title,
+        "channel": channel,
         "isLive": False,
         "duration": info.get("duration"),
     }))

@@ -1,5 +1,5 @@
 (() => {
-  const serverAvailable = location.origin === 'http://127.0.0.1:4173';
+  const serverAvailable = location.protocol === 'http:' || location.protocol === 'https:';
   const form = byId('source-form');
   const urlInput = byId('source-url');
   const note = byId('source-note');
@@ -7,6 +7,7 @@
   const cancelSourceButton = byId('cancel-source');
   const cancelJobButton = byId('cancel-job');
   const resumeJobBtn = byId('resume-job');
+  const searchMoreBtn = byId('search-more-clips');
   const resumeJobLabel = byId('resume-job-label');
   const engineInput = byId('source-engine');
   const modelInput = byId('source-model');
@@ -14,6 +15,11 @@
   const voiceField = byId('voice-model-field');
   const modeNormalBtn = byId('mode-normal-btn');
   const modePrototypeBtn = byId('mode-prototype-btn');
+  const modeSummaryBtn = byId('mode-summary-btn');
+  const summaryTargetField = byId('summary-target-field');
+  const summaryTargetInput = byId('summary-target');
+  const summaryCaptionsField = byId('summary-captions-field');
+  const summaryCaptionsInput = byId('summary-captions');
   const sourceSubtitle = byId('source-subtitle');
   const jobModeBadge = byId('job-mode-badge');
   const formatMenu = byId('source-format');
@@ -107,6 +113,7 @@
   const drawerAutoNote = byId('drawer-auto-note');
   const publishAllButton = byId('publish-all-auto');
   const ytChannelPill = byId('yt-channel-pill');
+  const connectChannelButton = byId('youtube-connect-channel');
   const publishIntervalSelect = byId('publish-interval');
   const publishReanalyzeCheck = byId('publish-reanalyze-seo');
   const toggleDrawerButton = byId('toggle-publish-drawer');
@@ -184,6 +191,163 @@
   let monitorSpeedMode = 'auto';
   let playheadRaf = null;
 
+  // ---- Modo Resumen -------------------------------------------------------------------------
+  const isSummary = (job) => job?.mode === 'summary';
+  const summaryStepLabels = ['Importación', 'Whisper Audio', 'Selección de pasajes', 'Montaje y tarjetas', 'Publicación'];
+  let labelsMode = '';
+  let renderedSummaryKey = '';
+  let renderedChaptersKey = '';
+  let summaryAutoOpened = null;
+
+  function longClock(seconds) {
+    const total = Math.max(0, Math.floor(Number(seconds) || 0));
+    const h = Math.floor(total / 3600);
+    const m = Math.floor(total / 60) % 60;
+    const s = total % 60;
+    return h ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${m}:${String(s).padStart(2, '0')}`;
+  }
+
+  function applyModeLabels(job) {
+    const mode = isSummary(job) ? 'summary' : 'normal';
+    if (labelsMode === mode) return;
+    labelsMode = mode;
+    const summary = mode === 'summary';
+    for (const step of steps) {
+      const textNode = step.lastChild;
+      if (!step.dataset.label) step.dataset.label = textNode.textContent;
+    }
+    steps.forEach((step, index) => { step.lastChild.textContent = summary ? summaryStepLabels[index] : step.dataset.label; });
+    byId('track-clips-tag').lastChild.textContent = summary ? 'Resumen' : 'Cortes';
+    byId('clips-title').textContent = summary ? 'Resumen del proyecto' : 'Clips del proyecto';
+    byId('drawer-title').textContent = summary ? 'Publicar resumen' : 'Publicar clips';
+    byId('publish-all-label').textContent = summary ? 'Subir el resumen a YouTube' : 'Publicar todos automático';
+    byId('publish-interval-row').hidden = summary;
+    byId('publish-reanalyze-row').hidden = summary;
+    byId('spotlight-pub-btn').textContent = summary ? 'Título y descripción' : 'Preparar publicación';
+    byId('open-publish-drawer').lastElementChild.textContent = summary ? 'Publicar' : 'Publicación';
+  }
+
+  function seekSummary(outStart, sourceStart) {
+    const job = currentJobData;
+    if (!job) return;
+    const item = getProjectClipItems(job)[0];
+    if (item?.rendered) {
+      openClipSpotlight(job, item);
+      const jump = () => {
+        spotlightVideo.currentTime = outStart;
+        spotlightVideo.play().catch(() => {});
+      };
+      if (spotlightVideo.readyState >= 1) jump();
+      else spotlightVideo.addEventListener('loadedmetadata', jump, { once: true });
+    } else if (projectMonitor.classList.contains('has-video') && Number.isFinite(sourceStart)) {
+      projectVideo.currentTime = sourceStart;
+      syncPlayhead();
+    }
+  }
+
+  function updateChapterHighlight() {
+    const info = currentJobData?.summary;
+    if (!info?.chapters?.length || spotlightIndex === null) return;
+    const now = spotlightVideo.currentTime;
+    let current = 0;
+    info.chapters.forEach((chapter, index) => { if (now >= chapter.outStart - 0.2) current = index; });
+    byId('summary-chapters').querySelectorAll('li').forEach((li, index) => li.classList.toggle('is-current', index === current));
+  }
+
+  function renderSummaryTimeline(job, duration) {
+    timelineDock.classList.add('is-summary');
+    timelineDock.classList.toggle('summary-done', job.stage === 'done');
+    const info = job.summary;
+    if (!info?.parts?.length) return;
+    const key = `${job.id}:${info.parts.length}:${Math.round(duration)}:${info.chapters?.length ?? 0}`;
+    if (renderedSummaryKey === key) return;
+    renderedSummaryKey = key;
+    for (const old of voiceSegmentsEl.querySelectorAll('.keep-block, .chapter-flag')) old.remove();
+    const frag = document.createDocumentFragment();
+    info.parts.forEach(([start, end, card], index) => {
+      const block = document.createElement('button');
+      block.type = 'button';
+      block.className = card ? 'keep-block has-card' : 'keep-block';
+      block.style.left = `${Math.max(0, (start / duration) * 100).toFixed(3)}%`;
+      block.style.width = `${Math.max(0.25, ((end - start) / duration) * 100).toFixed(3)}%`;
+      block.style.setProperty('--i', String(Math.min(index, 60)));
+      block.title = `Tramo ${index + 1} · ${longClock(start)}–${longClock(end)} (${Math.round(end - start)} s)${card ? ' · con tarjeta de contexto' : ''}`;
+      block.addEventListener('click', (event) => {
+        event.stopPropagation();
+        if (projectMonitor.classList.contains('has-video')) {
+          projectVideo.currentTime = start;
+          syncPlayhead();
+        }
+      });
+      frag.append(block);
+    });
+    (info.chapters ?? []).forEach((chapter, index) => {
+      const flag = document.createElement('span');
+      flag.className = 'chapter-flag';
+      flag.style.left = `${Math.max(0, (chapter.sourceStart / duration) * 100).toFixed(3)}%`;
+      flag.innerHTML = '<i></i><b></b>';
+      flag.firstChild.textContent = String(index + 1);
+      flag.lastChild.textContent = chapter.title;
+      frag.append(flag);
+    });
+    voiceSegmentsEl.append(frag);
+  }
+
+  function renderSummaryPanel(job) {
+    const panel = byId('summary-panel');
+    const active = isSummary(job);
+    panel.hidden = !active;
+    if (!active) return;
+    const info = job.summary;
+    const finished = job.stage === 'done';
+    panel.dataset.state = info ? (finished ? 'done' : 'building') : (job.stage === 'error' ? 'error' : 'planning');
+    byId('summary-output').textContent = info ? longClock(info.outputSeconds) : '--:--';
+    byId('summary-source-label').textContent = `de ${longClock(info?.sourceSeconds ?? job.duration)}`;
+    const keep = info && info.sourceSeconds ? Math.round((info.outputSeconds / info.sourceSeconds) * 100) : null;
+    byId('summary-keep').textContent = keep === null ? '' : `${keep} % del original`;
+    byId('summary-bar-fill').style.width = keep === null ? '0%' : `${Math.max(2, keep)}%`;
+    byId('summary-phase').textContent = job.message || '';
+    const progress = job.summaryProgress;
+    const progressEl = byId('summary-progress');
+    progressEl.hidden = !(progress && progress.total && !finished);
+    if (!progressEl.hidden) byId('summary-progress-fill').style.width = `${Math.round((progress.done / progress.total) * 100)}%`;
+
+    const stats = info ? [
+      [info.partCount, info.partCount === 1 ? 'tramo' : 'tramos'],
+      [info.chapters?.length ?? 0, 'capítulos'],
+      [info.cardCount ?? 0, 'tarjetas'],
+      [info.beatCount, 'pasajes clave'],
+    ].filter(([count]) => count > 0) : [];
+    byId('summary-stats').replaceChildren(...stats.map(([count, label]) => {
+      const li = document.createElement('li');
+      const strong = document.createElement('strong');
+      strong.textContent = String(count);
+      li.append(strong, ` ${label}`);
+      return li;
+    }));
+
+    const chapters = info?.chapters ?? [];
+    byId('summary-chapters-title').hidden = !chapters.length;
+    const chaptersKey = `${job.id}:${chapters.map((chapter) => `${chapter.title}@${chapter.outStart}`).join('|')}`;
+    if (renderedChaptersKey !== chaptersKey) {
+      renderedChaptersKey = chaptersKey;
+      byId('summary-chapters').replaceChildren(...chapters.map((chapter, index) => {
+        const li = document.createElement('li');
+        const button = document.createElement('button');
+        button.type = 'button';
+        const stamp = document.createElement('time');
+        stamp.textContent = longClock(chapter.outStart);
+        const label = document.createElement('span');
+        label.textContent = chapter.title;
+        button.append(stamp, label);
+        button.title = `Ir al capítulo ${index + 1}`;
+        button.addEventListener('click', () => seekSummary(chapter.outStart, chapter.sourceStart));
+        li.append(button);
+        return li;
+      }));
+    }
+  }
+
   function clipCount(count) {
     return `${count} ${count === 1 ? 'clip' : 'clips'}`;
   }
@@ -254,9 +418,12 @@
     const resumable = !busy && Boolean(currentJobData && (currentJobData.canResume || currentJobData.stage === 'error'));
     resumeJobBtn.hidden = !resumable;
     resumeJobBtn.disabled = !resumable || !serverAvailable;
+    const canSearchMore = !busy && Boolean(currentJobData?.stage === 'done' && currentJobData.canSearchMore);
+    searchMoreBtn.hidden = !canSearchMore;
+    searchMoreBtn.disabled = !canSearchMore || !serverAvailable;
     if (resumable) {
       const rem = currentJobData.remainingClips || 0;
-      resumeJobLabel.textContent = rem > 0 ? `Terminar vídeo (${rem} clips restantes)` : 'Terminar vídeo';
+      resumeJobLabel.textContent = isSummary(currentJobData) ? 'Terminar resumen' : (rem > 0 ? `Terminar vídeo (${rem} clips restantes)` : 'Terminar vídeo');
     }
     urlInput.readOnly = busy;
     engineInput.disabled = busy || !engines;
@@ -264,24 +431,35 @@
     if (voiceInput) voiceInput.disabled = busy || videoMode !== 'prototype' || !voiceInput.options.length;
     if (modeNormalBtn) modeNormalBtn.disabled = busy;
     if (modePrototypeBtn) modePrototypeBtn.disabled = busy;
+    if (modeSummaryBtn) modeSummaryBtn.disabled = busy;
+    if (summaryTargetInput) summaryTargetInput.disabled = busy;
+    if (summaryCaptionsInput) summaryCaptionsInput.disabled = busy;
     byId('local-model-field').hidden = !local;
     if (voiceField) voiceField.hidden = videoMode !== 'prototype';
+    if (summaryTargetField) summaryTargetField.hidden = videoMode !== 'summary';
+    if (summaryCaptionsField) summaryCaptionsField.hidden = videoMode !== 'summary';
     for (const input of formatInputs) input.disabled = busy;
   }
 
   function setVideoMode(nextMode) {
-    videoMode = nextMode === 'prototype' ? 'prototype' : 'normal';
+    videoMode = ['prototype', 'summary'].includes(nextMode) ? nextMode : 'normal';
     const isProto = videoMode === 'prototype';
-    modeNormalBtn?.classList.toggle('is-active', !isProto);
+    const isSummary = videoMode === 'summary';
+    modeNormalBtn?.classList.toggle('is-active', videoMode === 'normal');
     modePrototypeBtn?.classList.toggle('is-active', isProto);
-    modeNormalBtn?.setAttribute('aria-checked', String(!isProto));
+    modeSummaryBtn?.classList.toggle('is-active', isSummary);
+    modeNormalBtn?.setAttribute('aria-checked', String(videoMode === 'normal'));
     modePrototypeBtn?.setAttribute('aria-checked', String(isProto));
+    modeSummaryBtn?.setAttribute('aria-checked', String(isSummary));
     if (voiceField) voiceField.hidden = !isProto;
     if (voiceInput) voiceInput.disabled = busy || !isProto || !voiceInput.options.length;
+    if (summaryTargetField) summaryTargetField.hidden = !isSummary;
+    if (summaryCaptionsField) summaryCaptionsField.hidden = !isSummary;
+    formatMenu.hidden = isSummary;
     if (sourceSubtitle) {
       sourceSubtitle.textContent = isProto
         ? 'Prototipo narrado: sin cámara del creador, pausa animada + voz locutor, clips máx. 30 s.'
-        : baseSubtitle;
+        : (isSummary ? 'Resumen: conserva lo importante del vídeo en una versión más corta, con tarjetas de contexto y capítulos.' : baseSubtitle);
     }
     try { localStorage.setItem(modeStorage, videoMode); } catch { /* Ignore storage errors. */ }
     resetNote();
@@ -320,7 +498,9 @@
   }
 
   function resetNote() {
-    if (videoMode === 'prototype') {
+    if (videoMode === 'summary') {
+      setNote('Modo Resumen activo: la IA elige los pasajes clave, corta en pausas naturales, quita el aire muerto y añade tarjetas de contexto y capítulos. El resultado es un único vídeo 16:9.');
+    } else if (videoMode === 'prototype') {
       setNote('Modo Prototipo activo: extrae solo gameplay sin cámara, pausa con voz de locutor y limita cada clip a 30 s.');
     } else if (engineInput.value === 'local') {
       setNote('El análisis se hace en tu PC. El modelo se carga al procesar y se cierra al terminar.');
@@ -359,7 +539,7 @@
       engineInput.value = preferred;
       try {
         const savedMode = localStorage.getItem(modeStorage);
-        if (savedMode === 'prototype' || savedMode === 'normal') setVideoMode(savedMode);
+        if (['prototype', 'normal', 'summary'].includes(savedMode)) setVideoMode(savedMode);
       } catch { /* Ignore storage issues. */ }
       setControls(busy);
       if (!available.gemini && !available.openrouter && !available.local) setNote('No hay ningún motor de análisis disponible en este PC.', { error: true });
@@ -1141,6 +1321,11 @@
       else voiceSegmentsEl.append(frag);
     }
 
+    if (isSummary(job)) {
+      renderSummaryTimeline(job, duration);
+      return;
+    }
+    timelineDock.classList.remove('is-summary', 'summary-done');
     const items = getProjectClipItems(job).slice(0, revealedClipCount);
     for (const item of items) {
       let box = timelineBoxesMap.get(item.index);
@@ -1248,10 +1433,12 @@
     audioStatusEl.textContent = 'Espectrograma sincronizado';
     const segTotal = lastSegments.length || job.segmentCount;
     const itemsTotal = getProjectClipItems(job).length;
-    audioMetaEl.textContent = [
-      segTotal ? `${segTotal} segmentos` : null,
-      itemsTotal ? `${clipCount(itemsTotal)} seleccionados` : null,
-    ].filter(Boolean).join(' · ') || 'Pista sincronizada';
+    audioMetaEl.textContent = isSummary(job)
+      ? ([segTotal ? `${segTotal} segmentos` : null, job.summary ? `${job.summary.partCount} tramos conservados` : null, job.summary ? `${longClock(job.summary.outputSeconds)} de ${longClock(job.summary.sourceSeconds)}` : null].filter(Boolean).join(' · ') || 'Pista sincronizada')
+      : ([
+        segTotal ? `${segTotal} segmentos` : null,
+        itemsTotal ? `${clipCount(itemsTotal)} seleccionados` : null,
+      ].filter(Boolean).join(' · ') || 'Pista sincronizada');
     renderTimelineMarkers(job, duration);
   }
 
@@ -1269,6 +1456,13 @@
       spotlightCategory.hidden = !item.category;
     }
     spotlightTimes.textContent = `${time(item.start)}–${time(item.end)} · ${Math.round(item.end - item.start)} s`;
+    if (isSummary(job)) {
+      spotlightNum.textContent = 'RESUMEN';
+      spotlightRatio.textContent = '16:9 · Vídeo largo';
+      spotlightTimes.textContent = job.summary ? `${longClock(job.summary.outputSeconds)} de ${longClock(job.summary.sourceSeconds)}` : 'Vídeo resumido';
+      spotlightScore.hidden = true;
+      spotlightCategory.hidden = true;
+    }
     spotlightTitle.textContent = item.title;
     spotlightStage.dataset.ratio = item.ratio || '9:16';
     if (spotlightHook) {
@@ -2023,7 +2217,7 @@
         video.controls = false;
         video.src = address;
       }
-      stageBadge.textContent = layout ? `${item.ratio} · ${layout}` : item.ratio;
+      stageBadge.textContent = isSummary(job) ? `16:9 · ${longClock(job.summary?.outputSeconds)}` : (layout ? `${item.ratio} · ${layout}` : item.ratio);
       statusPill.textContent = 'MP4 listo';
       statusPill.classList.add('is-rendered');
       pubBtn.disabled = false;
@@ -2036,6 +2230,18 @@
       return;
     }
 
+    if (isSummary(job)) {
+      const progress = job.summaryProgress;
+      stageBadge.textContent = progress ? `Tramo ${progress.done}/${progress.total}` : 'Preparando';
+      statusPill.textContent = 'Montando…';
+      statusPill.classList.remove('is-rendered');
+      pubBtn.disabled = true;
+      downloadLink.removeAttribute('href');
+      downloadLink.setAttribute('aria-disabled', 'true');
+      subLink.removeAttribute('href');
+      subLink.setAttribute('aria-disabled', 'true');
+      return;
+    }
     const canPreviewSource = Boolean(job.sourceReady || (job.stage && job.stage !== 'downloading'));
     if (canPreviewSource && video.dataset.mode !== 'live') {
       video.dataset.mode = 'live';
@@ -2100,6 +2306,13 @@
     card.querySelector('.job-clip-times').textContent = `${time(item.start)}–${time(item.end)} · ${Math.round(item.end - item.start)} s`;
     card.querySelector('.job-clip-title').textContent = item.title;
     card.querySelector('.job-clip-reason').textContent = item.reason;
+    if (isSummary(job)) {
+      card.classList.add('is-summary');
+      card.querySelector('.clip-num-pill').textContent = 'RESUMEN';
+      card.querySelector('.clip-ratio-pill').textContent = '16:9';
+      card.querySelector('.job-clip-times').textContent = job.summary ? `${longClock(job.summary.outputSeconds)} de ${longClock(job.summary.sourceSeconds)}` : 'Vídeo resumido';
+      card.querySelector('.clip-cat-pill').hidden = true;
+    }
 
     const stageEl = card.querySelector('.clip-format-stage');
     stageEl.dataset.ratio = item.ratio || '9:16';
@@ -2148,6 +2361,18 @@
   function updateViralScanner(job, lockingItem = null) {
     if (!viralSearchScanner) return;
     clearTimeout(viralHideTimer);
+    if (isSummary(job)) {
+      const searching = ['loading', 'selecting'].includes(job.stage) && !job.summary;
+      viralSearchScanner.hidden = !searching;
+      viralSearchScanner.classList.remove('is-locking');
+      viralSearchScanner.classList.toggle('is-sweeping', searching);
+      if (searching) {
+        viralSearchScanner.style.left = '';
+        viralSearchScanner.style.width = '12%';
+        viralScannerTag.textContent = job.stage === 'loading' ? 'ANALIZANDO EL AUDIO…' : 'ELIGIENDO LOS PASAJES CLAVE…';
+      }
+      return;
+    }
     if (lockingItem) {
       viralLockedUntil = Date.now() + 300;
       const duration = projectVideo.duration || job.duration || (lastSegments.at(-1)?.end ?? 0) || 1;
@@ -2188,6 +2413,10 @@
       revealedClipCount = 0;
     }
     const items = getProjectClipItems(job);
+    if (isSummary(job)) {
+      revealedClipCount = items.length;
+      return;
+    }
     if (revealedClipCount >= items.length || revealTimer) return;
 
     const liveSearch = job.stage !== 'done' && job.stage !== 'error';
@@ -2237,9 +2466,11 @@
     }
     const allItems = getProjectClipItems(job);
     const renderedTotal = allItems.filter((item) => item.rendered).length;
-    byId('job-clip-count').textContent = allItems.length
-      ? `${renderedTotal}/${allItems.length} clips`
-      : '0 clips';
+    byId('job-clip-count').textContent = isSummary(job)
+      ? (renderedTotal ? '1 vídeo' : (allItems.length ? 'Montando…' : 'Preparando'))
+      : (allItems.length
+        ? `${renderedTotal}/${allItems.length} clips`
+        : '0 clips');
 
     const visibleItems = allItems.slice(0, revealedClipCount);
     clipsStatus.hidden = visibleItems.length > 0;
@@ -2248,7 +2479,7 @@
         ? 'Revelando tramos seleccionados uno a uno…'
         : (job.stage === 'done'
           ? 'Este proyecto finalizó sin clips exportados.'
-          : 'Los clips de esta URL aparecerán aquí automáticamente en cuanto la IA los seleccione…');
+          : (isSummary(job) ? 'El resumen aparecerá aquí en cuanto termine el montaje…' : 'Los clips de esta URL aparecerán aquí automáticamente en cuanto la IA los seleccione…'));
       return;
     }
 
@@ -2272,21 +2503,49 @@
   }
 
   let drawerUploads = {};
+  let drawerBatch = null;
+  let connectingChannel = false;
   let publishPollTimer = null;
 
-  async function refreshYouTubeChannelPill() {
-    if (!serverAvailable || !ytChannelPill) return;
-    try {
-      const res = await fetch('/api/youtube/status');
-      const data = await res.json();
-      ytChannelPill.classList.toggle('is-connected', Boolean(data.connected));
-      ytChannelPill.textContent = data.connected
-        ? `Canal conectado: ${data.title} (${data.handle || 'YouTube'})`
-        : `YouTube: ${data.reason || 'Sin conectar'}`;
-    } catch {
-      ytChannelPill.textContent = 'YouTube: sin conexión al servidor local';
-    }
+  function updateYouTubeChannelPill() {
+    const channel = youtubeDestination.selected();
+    const data = youtubeDestination.state();
+    ytChannelPill.classList.toggle('is-connected', Boolean(channel));
+    ytChannelPill.textContent = channel
+      ? `Canal de destino: ${channel.title}`
+      : (data.connected ? 'Elige el canal de destino.' : `YouTube: ${data.reason || 'Sin conectar'}`);
+    connectChannelButton.disabled = !serverAvailable || !data.hasCredentials || connectingChannel;
+    publishAllButton.disabled = !serverAvailable || !channel || Boolean(drawerBatch?.running);
+    applyUploadBadgesToDrawer();
   }
+  document.addEventListener('corte-youtube-channel', updateYouTubeChannelPill);
+
+  connectChannelButton.addEventListener('click', async () => {
+    if (connectChannelButton.disabled || connectingChannel) return;
+    connectingChannel = true;
+    updateYouTubeChannelPill();
+    try {
+      const response = await fetch('/api/youtube/connect', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+      });
+      if (!response.ok) throw new Error();
+      let connection = await response.json();
+      drawerAutoNote.textContent = connection.message || '';
+      while (connection.running) {
+        await new Promise((resolve) => setTimeout(resolve, 1800));
+        const status = await fetch('/api/youtube/connect');
+        if (!status.ok) throw new Error();
+        connection = await status.json();
+      }
+      await youtubeDestination.refresh();
+      drawerAutoNote.textContent = connection.error || connection.message || 'Conexión finalizada.';
+    } catch {
+      drawerAutoNote.textContent = 'No se pudo conectar el canal de YouTube.';
+    } finally {
+      connectingChannel = false;
+      updateYouTubeChannelPill();
+    }
+  });
 
   function applyUploadBadgesToDrawer() {
     for (const card of drawerClipList.querySelectorAll('.drawer-clip-card')) {
@@ -2294,13 +2553,18 @@
       const badge = card.querySelector('.drawer-clip-upload-badge');
       const [autoBtn] = card.querySelectorAll('button');
       const rec = drawerUploads[file];
-      if (!badge || !rec?.videoId) continue;
+      if (!badge) continue;
+      if (!rec?.videoId) {
+        if (autoBtn.dataset.uploading !== 'true') autoBtn.disabled = !youtubeDestination.selected();
+        continue;
+      }
       const when = rec.publishAt === 'public' || rec.privacyStatus === 'public'
         ? 'Publicado YA'
         : `Programado ${historyDate.format(new Date(rec.publishAt))}`;
       badge.innerHTML = '';
       const txt = document.createElement('span');
-      txt.textContent = when;
+      const channelTitle = rec.channelTitle ?? youtubeDestination.state().channels?.find((channel) => channel.channelId === rec.channelId)?.title;
+      txt.textContent = channelTitle ? `${when} · ${channelTitle}` : when;
       const link = document.createElement('a');
       link.href = rec.url;
       link.target = '_blank';
@@ -2319,11 +2583,13 @@
       const res = await fetch(`/api/jobs/${jobId}/uploads`);
       if (!res.ok) return;
       const { uploads, batch } = await res.json();
+      if (drawerJobId !== jobId) return;
+      drawerBatch = batch;
       drawerUploads = uploads || {};
       applyUploadBadgesToDrawer();
       if (batch) {
         drawerAutoNote.textContent = batch.message || '';
-        publishAllButton.disabled = Boolean(batch.running);
+        publishAllButton.disabled = !youtubeDestination.selected() || Boolean(batch.running);
         if (batch.running && !publishPollTimer) {
           publishPollTimer = setTimeout(() => {
             publishPollTimer = null;
@@ -2331,7 +2597,7 @@
           }, 1800);
         }
       } else {
-        publishAllButton.disabled = false;
+        publishAllButton.disabled = !youtubeDestination.selected();
       }
     } catch { /* Ignore temporary poll errors */ }
   }
@@ -2341,17 +2607,18 @@
       drawerJobId = job.id;
       drawerFiles = new Set();
       drawerUploads = {};
+      drawerBatch = null;
       if (publishPollTimer) { clearTimeout(publishPollTimer); publishPollTimer = null; }
       drawerClipList.replaceChildren();
-      drawerAutoNote.textContent = '';
-      void refreshYouTubeChannelPill();
+      drawerAutoNote.textContent = engines?.exportDir ? `Todos los vídeos terminados también están en: ${engines.exportDir}` : '';
+      void youtubeDestination.refresh();
       void syncDrawerUploads(job.id);
     }
     const clips = job.clips ?? [];
     const hasClips = clips.length > 0;
     toggleDrawerButton.hidden = !hasClips || currentView !== 'editor';
     openDrawerButton.hidden = !hasClips;
-    drawerClipCount.textContent = clipCount(clips.length);
+    drawerClipCount.textContent = isSummary(job) ? (clips.length ? '1 vídeo' : '0 vídeos') : clipCount(clips.length);
 
     for (const clip of clips) {
       if (drawerFiles.has(clip.file)) continue;
@@ -2378,7 +2645,7 @@
       video.setAttribute('aria-label', clip.title);
       card.querySelector('h3').textContent = clip.title;
       const layout = layoutNames[clip.framing?.layout];
-      const metaParts = [
+      const metaParts = isSummary(job) ? [longClock(clip.duration ?? (clip.end - clip.start)), '16:9', 'Vídeo largo con capítulos'] : [
         Number.isFinite(clip.score) ? `★ ${clip.score.toFixed(1)}` : null,
         clip.category ? clip.category.toUpperCase() : null,
         `${time(clip.start)}–${time(clip.end)} (${Math.round(clip.end - clip.start)}s)`,
@@ -2387,16 +2654,23 @@
       ].filter(Boolean);
       card.querySelector('.drawer-clip-meta').textContent = metaParts.join(' · ');
       const [autoBtn, editBtn] = card.querySelectorAll('button');
+      const autoLabel = isSummary(job) ? 'Subir a YouTube' : 'Publicar automático';
+      autoBtn.querySelector('span').textContent = autoLabel;
+      if (isSummary(job)) editBtn.textContent = 'Título y descripción';
       autoBtn.addEventListener('click', async () => {
         if (!serverAvailable || autoBtn.disabled) return;
+        const channel = youtubeDestination.selected();
+        if (!channel) return;
+        autoBtn.dataset.uploading = 'true';
         autoBtn.disabled = true;
-        autoBtn.querySelector('span').textContent = 'Analizando SEO…';
-        drawerAutoNote.textContent = `Analizando «${clip.title}» y publicando en YouTube con SEO pro…`;
+        autoBtn.querySelector('span').textContent = isSummary(job) ? 'Subiendo…' : 'Analizando SEO…';
+        drawerAutoNote.textContent = isSummary(job) ? `Subiendo «${clip.title}» a YouTube con sus capítulos…` : `Analizando «${clip.title}» y publicando en YouTube con SEO pro…`;
         try {
           const res = await fetch(`/api/jobs/${job.id}/publication/${clip.file}/upload`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ provider: engineInput.value, model: modelInput.value, immediate: true, forceSeo: Boolean(publishReanalyzeCheck?.checked) }),
+            body: JSON.stringify({ provider: engineInput.value, model: modelInput.value, channelId: channel.channelId,
+              immediate: true, forceSeo: Boolean(publishReanalyzeCheck?.checked) && !isSummary(job) }),
           });
           const out = await res.json();
           if (!res.ok) {
@@ -2411,6 +2685,9 @@
           drawerAutoNote.textContent = 'Error de conexión al publicar.';
           autoBtn.disabled = false;
           autoBtn.querySelector('span').textContent = 'Publicar automático';
+        } finally {
+          delete autoBtn.dataset.uploading;
+          autoBtn.disabled = !youtubeDestination.selected() || Boolean(drawerUploads[clip.file]?.videoId);
         }
       });
       editBtn.addEventListener('click', () => openClipPublication(job.id, clip));
@@ -2418,7 +2695,7 @@
     }
     applyUploadBadgesToDrawer();
 
-    if (job.stage === 'done' && hasClips && currentView === 'editor' && drawerAutoOpenedFor !== job.id) {
+    if (job.stage === 'done' && hasClips && currentView === 'editor' && drawerAutoOpenedFor !== job.id && !isSummary(job)) {
       drawerAutoOpenedFor = job.id;
       setDrawerOpen(true);
     }
@@ -2479,7 +2756,10 @@
       waveformRenderedJob = null;
       waveBarEls = [];
       renderedVoiceKey = '';
+      renderedSummaryKey = '';
+      renderedChaptersKey = '';
       timelineBoxesMap.clear();
+      timelineDock.classList.remove('is-summary', 'summary-done');
       voiceSegmentsEl.replaceChildren();
       shownDropClips.clear();
       waterDropQueue.length = 0;
@@ -2506,9 +2786,28 @@
       }
     }
     currentJobData = job;
+    document.body.dataset.jobMode = job.mode || 'normal';
+    applyModeLabels(job);
 
     byId('job-title').textContent = job.title || 'Proyecto de vídeo';
-    if (jobModeBadge) jobModeBadge.hidden = job.mode !== 'prototype';
+    if (jobModeBadge) {
+      jobModeBadge.hidden = !['prototype', 'summary'].includes(job.mode);
+      jobModeBadge.classList.toggle('is-summary-badge', job.mode === 'summary');
+      if (job.mode === 'summary') {
+        const clock = (seconds) => {
+          const total = Math.max(0, Math.floor(seconds || 0));
+          const h = Math.floor(total / 3600);
+          const m = Math.floor(total / 60) % 60;
+          return `${h ? `${h}:${String(m).padStart(2, '0')}` : m}:${String(total % 60).padStart(2, '0')}`;
+        };
+        const info = job.summary;
+        jobModeBadge.textContent = info
+          ? `Resumen · ${clock(info.outputSeconds)} de ${clock(info.sourceSeconds)}${info.chapters?.length ? ` · ${info.chapters.length} capítulos` : ''}${info.cardCount ? ` · ${info.cardCount} tarjetas` : ''}`
+          : 'Resumen · Vídeo largo 16:9';
+      } else {
+        jobModeBadge.textContent = 'Prototipo · Sin cámara · Voz IA';
+      }
+    }
     const src = sourceFromJob(job);
     const sourceUrl = job.url || src.url;
     if (sourceUrl) {
@@ -2537,10 +2836,19 @@
     updateAudioTimeline(job);
     updateViralScanner(job, null);
     renderProjectClips(job);
+    renderSummaryPanel(job);
     updatePublishDrawer(job);
     renderProjectsMenu();
 
-    if (currentView === 'editor') {
+    if (isSummary(job) && job.stage === 'done' && currentView === 'editor' && summaryAutoOpened !== job.id) {
+      const result = getProjectClipItems(job)[0];
+      if (result?.rendered) {
+        summaryAutoOpened = job.id;
+        openClipSpotlight(job, result);
+      }
+    }
+
+    if (currentView === 'editor' && !isSummary(job)) {
       const items = getProjectClipItems(job);
       if (!isNewJob) {
         for (const item of items) {
@@ -2779,34 +3087,43 @@
       return;
     }
     if (!serverAvailable || publishAllButton.disabled) return;
+    const channel = youtubeDestination.selected();
+    if (!channel) return;
     const mode = publishIntervalSelect?.value || '1-first';
     const intervalHours = mode === '0' ? 0 : (mode === '2-all' ? 2 : 1);
     const publishFirstImmediately = mode === '1-first' || mode === '0';
+    const jobId = currentJobData.id;
+    drawerBatch = { running: true };
     publishAllButton.disabled = true;
-    drawerAutoNote.textContent = 'Iniciando análisis SEO 1 a 1 y subida automática a YouTube…';
+    drawerAutoNote.textContent = isSummary(currentJobData) ? 'Subiendo el resumen a YouTube con sus capítulos…' : 'Iniciando análisis SEO 1 a 1 y subida automática a YouTube…';
     try {
-      const res = await fetch(`/api/jobs/${currentJobData.id}/publish-all`, {
+      const res = await fetch(`/api/jobs/${jobId}/publish-all`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           provider: engineInput.value,
           model: modelInput.value,
+          channelId: channel.channelId,
           intervalHours,
           publishFirstImmediately,
-          regenerateSeo: Boolean(publishReanalyzeCheck?.checked ?? true),
+          regenerateSeo: Boolean(publishReanalyzeCheck?.checked ?? true) && !isSummary(currentJobData),
         }),
       });
       const data = await res.json();
+      if (drawerJobId !== jobId) return;
       if (!res.ok) {
         drawerAutoNote.textContent = data.error || 'No se pudo iniciar la publicación automática.';
-        publishAllButton.disabled = false;
+        drawerBatch = data.batch ?? null;
+        updateYouTubeChannelPill();
         return;
       }
       drawerAutoNote.textContent = data.batch?.message || 'Analizando y publicando clips 1 a 1…';
-      void syncDrawerUploads(currentJobData.id);
+      void syncDrawerUploads(jobId);
     } catch {
+      if (drawerJobId !== jobId) return;
       drawerAutoNote.textContent = 'Error de conexión al iniciar la publicación automática.';
-      publishAllButton.disabled = false;
+      drawerBatch = null;
+      updateYouTubeChannelPill();
     }
   });
 
@@ -2837,6 +3154,31 @@
       setControls(false);
     }
   });
+  searchMoreBtn.addEventListener('click', async () => {
+    if (!serverAvailable || !currentJob || busy || searchMoreBtn.disabled) return;
+    const id = currentJob;
+    const status = byId('job-status');
+    searchMoreBtn.disabled = true;
+    status.textContent = 'Iniciando una nueva búsqueda de clips…';
+    try {
+      const response = await fetch(`/api/jobs/${id}/search-more`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      });
+      const job = await response.json();
+      if (!response.ok) throw new Error(job.error || 'No se pudo iniciar la búsqueda.');
+      if (currentJob !== id) return;
+      setDrawerOpen(false);
+      showJob(job);
+      followJob(id);
+      void loadHistory();
+    } catch (error) {
+      if (currentJob !== id) return;
+      status.textContent = error.message || 'No se pudo conectar con Corte Studio.';
+      setControls(false);
+    }
+  });
   urlInput.addEventListener('input', resetNote);
   engineInput.addEventListener('change', rememberEngine);
   modelInput.addEventListener('change', rememberEngine);
@@ -2854,6 +3196,7 @@
 
   modeNormalBtn?.addEventListener('click', () => { if (!busy) setVideoMode('normal'); });
   modePrototypeBtn?.addEventListener('click', () => { if (!busy) setVideoMode('prototype'); });
+  modeSummaryBtn?.addEventListener('click', () => { if (!busy) setVideoMode('summary'); });
   voiceInput?.addEventListener('change', () => {
     try { localStorage.setItem(voiceStorage, voiceInput.value); } catch { /* Ignore storage errors. */ }
   });
@@ -2873,7 +3216,7 @@
       return;
     }
     const format = currentFormat();
-    if (!format.layouts.length) {
+    if (videoMode !== 'summary' && !format.layouts.length) {
       formatMenu.open = true;
       setNote('Activa al menos un diseño para continuar.', { error: true });
       formatMenu.querySelector('[name="layout"]').focus();
@@ -2894,6 +3237,7 @@
           format,
           mode: videoMode,
           ...(videoMode === 'prototype' && voiceInput?.value ? { voice: voiceInput.value } : {}),
+          ...(videoMode === 'summary' ? { targetMinutes: Number(summaryTargetInput?.value) || 0, captions: summaryCaptionsInput?.checked !== false } : {}),
         }),
       });
       const job = await response.json();
@@ -2917,6 +3261,7 @@
     }
   });
 
+  spotlightVideo.addEventListener('timeupdate', updateChapterHighlight);
   renderEmptyWaveform();
   switchView('home');
   if (serverAvailable) {

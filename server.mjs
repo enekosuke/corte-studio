@@ -12,8 +12,14 @@ import { listLlamaModels } from './pipeline/llama.mjs';
 import { listVoiceModels } from './pipeline/media.mjs';
 import { defaultOpenRouterModel, openRouterModels } from './pipeline/openrouter.mjs';
 import { loadPublication, savePublicationDraft } from './pipeline/publication.mjs';
+import { exportAllProjects, exportRoot } from './pipeline/export.mjs';
+import { handleBrandsRoute } from './routes/brands-routes.mjs';
+import { handleSystemRoute } from './routes/system-routes.mjs';
+import { handleQueueRoute } from './routes/queue-routes.mjs';
+import { handleNleRoute } from './routes/nle-routes.mjs';
+import { popNextQueuedJob } from './pipeline/queue.mjs';
 import { normalizeFormat } from './pipeline/formats.mjs';
-import { getJobUploads, getYouTubeConnectionStatus, publishAllClipsBatch, uploadSingleClipWithSeo } from './pipeline/youtube_upload.mjs';
+import { connectYouTubeChannel, getJobUploads, getYouTubeChannelConnection, getYouTubeConnectionStatus, publishAllClipsBatch, uploadSingleClipWithSeo } from './pipeline/youtube_upload.mjs';
 
 const host = '127.0.0.1';
 const port = 4173;
@@ -44,6 +50,8 @@ const files = new Map([
   ['/studio.js', ['studio.js', 'text/javascript; charset=utf-8']],
   ['/jobs.js', ['jobs.js', 'text/javascript; charset=utf-8']],
   ['/publication.js', ['publication.js', 'text/javascript; charset=utf-8']],
+  ['/pro-studio.js', ['pro-studio.js', 'text/javascript; charset=utf-8']],
+  ['/pro-studio.css', ['pro-studio.css', 'text/css; charset=utf-8']],
   [asset, ['assets/podcast.png', 'image/png']],
 ]);
 
@@ -295,6 +303,32 @@ async function resolveEngine(provider = 'gemini', modelId) {
 }
 
 const activePublishBatches = new Map();
+let drainingQueue = false;
+async function drainQueue() {
+  if (drainingQueue) return;
+  drainingQueue = true;
+  try {
+    const next = await popNextQueuedJob();
+    if (!next) return;
+    const source = youtube.parseVideoSource(next.url);
+    if (!source) return;
+    const engine = await resolveOptionalEngine(next.provider, next.model);
+    if (!engine) return;
+    await startJob(source, engine, undefined, next.format ? normalizeFormat(next.format) : undefined, {
+      mode: next.mode || 'normal',
+      voice: next.voice,
+      summaryOptions: next.summaryOptions,
+      brandId: next.brandId,
+    }).catch(() => {});
+  } finally {
+    drainingQueue = false;
+  }
+}
+
+subscribeJobEvents((updated) => {
+  if (['done', 'error'].includes(updated?.stage)) void drainQueue();
+});
+
 
 async function resolveOptionalEngine(provider, modelId) {
   try {
@@ -319,23 +353,33 @@ createServer(async (request, response) => {
     if (pathname === '/api/engines' && request.method === 'GET') {
       const [models, voices] = await Promise.all([listLlamaModels(), listVoiceModels()]);
       const openrouterModel = openRouterModels.find(({ id }) => id === defaultOpenRouterModel)?.label ?? defaultOpenRouterModel;
-      return sendJson(response, 200, { gemini: Boolean(geminiKey), openrouter: Boolean(openRouterKey), openrouterModel, models, voices });
+      return sendJson(response, 200, { gemini: Boolean(geminiKey), openrouter: Boolean(openRouterKey), openrouterModel, models, voices, exportDir: exportRoot });
     }
     if (pathname === '/api/jobs' && request.method === 'POST') {
-      const { url, retryJobId, provider = 'gemini', model: modelId, format, mode = 'normal', voice } = await readStudioRequest(request, 5000);
+      const { url, retryJobId, provider = 'gemini', model: modelId, format, mode = 'normal', voice, targetMinutes, captions, brandId } = await readStudioRequest(request, 5000);
       const source = typeof url === 'string' && youtube.parseVideoSource(url.trim());
       if (!source) throw new RequestError(400, 'Introduce un enlace válido de YouTube o Twitch (vídeo, clip o directo).');
       const engine = await resolveEngine(provider, modelId);
       const cleanVoice = typeof voice === 'string' && /^(?:piper|edge):[\w.-]+$/i.test(voice.trim()) ? voice.trim() : 'piper:es_ES-davefx-medium';
-      return sendJson(response, 202, await startJob(source, engine, retryJobId, normalizeFormat(format), { mode, voice: cleanVoice }));
+      return sendJson(response, 202, await startJob(source, engine, retryJobId, normalizeFormat(format), { mode, voice: cleanVoice, summaryOptions: { targetMinutes, captions }, brandId: typeof brandId === 'string' ? brandId : undefined }));
     }
-    const resumeMatch = /^\/api\/jobs\/([a-f0-9-]+)\/resume$/.exec(pathname);
+    const resumeMatch = /^\/api\/jobs\/([a-f0-9-]+)\/(resume|search-more)$/.exec(pathname);
     if (resumeMatch && request.method === 'POST') {
       const { provider, model: modelId } = await readStudioRequest(request, 5000);
       const existing = await getJob(resumeMatch[1]);
       if (!existing) throw new RequestError(404, 'Este análisis ya no está disponible.');
-      const engine = await resolveEngine(provider || existing.provider || 'openrouter', modelId ?? existing.modelId);
-      return sendJson(response, 202, await resumeJob(resumeMatch[1], engine));
+      const searchMore = resumeMatch[2] === 'search-more';
+      const engine = searchMore && existing.provider === 'agent'
+        ? await resolveOptionalEngine()
+        : await resolveEngine(provider || existing.provider || 'openrouter', modelId ?? existing.modelId);
+      if (!engine) throw new RequestError(400, 'Configura un motor de IA para buscar más clips.');
+      return sendJson(response, 202, await resumeJob(resumeMatch[1], engine, { searchMore }));
+    }
+    const routeContext = { request, response, pathname, searchParams: new URL(request.url, origin).searchParams, origin, sendJson, resolveEngine, onQueueChanged: drainQueue };
+    if (await handleBrandsRoute(routeContext) || await handleSystemRoute(routeContext) || await handleQueueRoute(routeContext) || await handleNleRoute(routeContext)) return;
+    if (pathname === '/api/export' && request.method === 'POST') {
+      await readStudioRequest(request, 1024);
+      return sendJson(response, 200, await exportAllProjects());
     }
     if (pathname === '/api/jobs' && request.method === 'GET') {
       return sendJson(response, 200, { jobs: await listJobs() });
@@ -386,6 +430,13 @@ createServer(async (request, response) => {
     if (pathname === '/api/youtube/status' && request.method === 'GET') {
       return sendJson(response, 200, await getYouTubeConnectionStatus());
     }
+    if (pathname === '/api/youtube/connect' && request.method === 'GET') {
+      return sendJson(response, 200, getYouTubeChannelConnection());
+    }
+    if (pathname === '/api/youtube/connect' && request.method === 'POST') {
+      await readStudioRequest(request, 5000);
+      return sendJson(response, 202, connectYouTubeChannel());
+    }
     const uploadsMatch = /^\/api\/jobs\/([a-f0-9-]+)\/uploads$/.exec(pathname);
     if (uploadsMatch && request.method === 'GET') {
       const job = await getJob(uploadsMatch[1]);
@@ -398,11 +449,11 @@ createServer(async (request, response) => {
     const publishAllMatch = /^\/api\/jobs\/([a-f0-9-]+)\/publish-all$/.exec(pathname);
     if (publishAllMatch && request.method === 'POST') {
       const id = publishAllMatch[1];
-      const existingBatch = activePublishBatches.get(id);
-      if (existingBatch?.running) return sendJson(response, 409, { error: 'Ya se está ejecutando la publicación automática de este proyecto.', batch: existingBatch });
       const body = await readStudioRequest(request, 5000);
       const job = await getJob(id);
       if (!job || !job.clips?.length) throw new RequestError(400, 'Este proyecto no tiene clips exportados.');
+      const existingBatch = activePublishBatches.get(id);
+      if (existingBatch?.running) return sendJson(response, 409, { error: 'Ya se está ejecutando la publicación automática de este proyecto.', batch: existingBatch });
       const intervalHours = Number.isFinite(Number(body.intervalHours)) ? Math.max(0, Math.min(72, Number(body.intervalHours))) : 1;
       const publishFirstImmediately = body.publishFirstImmediately !== false;
       const regenerateSeo = body.regenerateSeo !== false;
@@ -424,6 +475,7 @@ createServer(async (request, response) => {
           engineCtx = await openJobInference(engine, jobDirectory(job));
           const summary = await publishAllClipsBatch(id, {
             infer: engineCtx.infer,
+            channelId: body.channelId,
             intervalHours,
             publishFirstImmediately,
             regenerateSeo,
@@ -442,6 +494,7 @@ createServer(async (request, response) => {
             phase: summary.stopError ? 'partial' : 'done',
             results: summary.results,
             error: summary.stopError ?? null,
+            errorCode: summary.stopCode ?? null,
             message: summary.stopError
               ? `Subidos ${summary.uploadedCount}. Detenido en ${summary.stoppedAt}: ${summary.stopError}`
               : `Completado: ${summary.totalTracked} Shorts publicados o programados en YouTube.`,
@@ -467,6 +520,7 @@ createServer(async (request, response) => {
         engineCtx = await openJobInference(engine, dirname(path));
         const res = await uploadSingleClipWithSeo(id, file, {
           infer: engineCtx.infer,
+          channelId: body.channelId,
           immediate: body.immediate !== false,
           publishAtIso: typeof body.publishAtIso === 'string' ? body.publishAtIso : undefined,
           forceSeo: body.forceSeo === true,
@@ -491,6 +545,14 @@ createServer(async (request, response) => {
     if (sourceMediaMatch) return await serveSource(request, response, sourceMediaMatch[1]);
     const mediaMatch = /^\/media\/([a-f0-9-]+)\/(clip-\d+\.mp4)$/.exec(pathname);
     if (mediaMatch) return await serveClip(request, response, mediaMatch[1], mediaMatch[2]);
+    const thumbMatch = /^\/media\/([a-f0-9-]+)\/(clip-\d+-thumb\.jpg)$/.exec(pathname);
+    if (thumbMatch && ['GET', 'HEAD'].includes(request.method)) {
+      const clipPath = await getClipFile(thumbMatch[1], thumbMatch[2].replace('-thumb.jpg', '.mp4'));
+      if (!clipPath) throw new RequestError(404, 'Miniatura no disponible.');
+      const img = await readFile(join(dirname(clipPath), thumbMatch[2])).catch(() => { throw new RequestError(404, 'Miniatura aún no generada.'); });
+      response.writeHead(200, { 'Content-Type': 'image/jpeg', 'Content-Length': img.length, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
+      return response.end(request.method === 'HEAD' ? undefined : img);
+    }
     const subtitleMatch = /^\/media\/([a-f0-9-]+)\/(clip-\d+)\.ass$/.exec(pathname);
     if (subtitleMatch) return await serveSubtitles(request, response, subtitleMatch[1], subtitleMatch[2]);
 
@@ -507,6 +569,9 @@ createServer(async (request, response) => {
   }
 }).listen(port, host, () => {
   console.log(`Corte Studio está disponible en ${origin}`);
+  void exportAllProjects()
+    .then(({ projects, files }) => console.log(`Vídeos al día en ${exportRoot}: ${projects} proyectos, ${files} archivos nuevos.`))
+    .catch((error) => console.warn('No se pudo preparar la carpeta de vídeos:', error.message));
   if (geminiKey) console.log('Gemini listo.');
   if (openRouterKey) console.log(`OpenRouter listo (${defaultOpenRouterModel}).`);
 });

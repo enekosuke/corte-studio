@@ -1,15 +1,17 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
-import { mkdir, mkdtemp, readdir, readFile, rm, rmdir } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { mkdir, mkdtemp, readdir, readFile, rm, rmdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import test from 'node:test';
 import youtubeMod from '../dist/youtube.js';
-import { buildAgentCandidates, buildAgentFramingPlan, chooseClips, chooseFraming, choosePrototypeFraming, cvFramingPlan, inspectInset, refineInsetPlan } from '../pipeline/analysis.mjs';
+import { buildAgentCandidates, buildAgentFramingPlan, chooseClips, chooseFraming, choosePrototypeFraming, cvFramingPlan, inspectInset, refineGameplayHook, refineInsetPlan, refinePrototypeCopy } from '../pipeline/analysis.mjs';
 import { compositionGraph, containOffsetY, defaultFormat, layoutPanels, normalizeFormat, outputSize } from '../pipeline/formats.mjs';
-import { cancelAllJobs, processVideo } from '../pipeline/jobs.mjs';
+import { resolvePython } from '../pipeline/runtime.mjs';
+import { cancelAllJobs, getJob, jobsDir, processVideo, resumeJob, saveJobRecord, subscribeJobEvents } from '../pipeline/jobs.mjs';
 import { analyzeAudioSignals, dataDir, getMediaTools, listVoiceModels, probeVideo, renderClip, renderPrototypeClip } from '../pipeline/media.mjs';
 import { analyzeAndSaveClipSeo, generatePublicationSuggestions, loadPublication, saveAgentSeoSuggestion, savePublicationDraft } from '../pipeline/publication.mjs';
-import { buildVideoMetadata } from '../pipeline/youtube_upload.mjs';
+import { buildVideoMetadata, getLatestScheduledUpload, nextPublishDate, uploadSingleClip } from '../pipeline/youtube_upload.mjs';
 
 async function workspace(t) {
   await mkdir(dataDir, { recursive: true });
@@ -23,6 +25,162 @@ async function workspace(t) {
 
 const clip = { file: 'clip-1.mp4', title: 'Corte de prueba', start: 0, end: 2.2 };
 const transcript = { segments: [{ start: 0.2, end: 1.6, text: 'Así se conserva el subtítulo.' }] };
+
+test('buscar más clips vuelve a selección, excluye los tramos usados y añade al mismo proyecto', async (t) => {
+  const id = randomUUID();
+  const directory = join(jobsDir, id);
+  await mkdir(directory, { recursive: true });
+  t.after(async () => {
+    const job = await getJob(id);
+    if (job && !['done', 'error'].includes(job.stage)) await cancelAllJobs();
+    for (const file of await readdir(directory)) await rm(join(directory, file));
+    await rmdir(directory);
+  });
+  const { ffmpeg } = await getMediaTools();
+  const format = normalizeFormat({ ratio: '9:16', layouts: ['fit'], fitCrop: 'original' });
+  execFileSync(ffmpeg, ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'color=blue:s=320x180:r=30:d=24',
+    '-f', 'lavfi', '-i', 'sine=frequency=440:duration=24', '-c:v', 'libx264', '-c:a', 'aac', join(directory, 'source.mp4')]);
+  const old = { file: 'clip-3.mp4', start: 0, end: 8, title: 'Primer corte' };
+  await writeFile(join(directory, old.file), 'archivo anterior');
+  await writeFile(join(directory, 'youtube-uploads.json'), '{"clip-3.mp4":{"videoId":"ya-publicado"}}');
+  await writeFile(join(directory, 'candidates.json'), JSON.stringify([old]));
+  await writeFile(join(directory, 'transcript.json'), JSON.stringify({ language: 'es', segments: [
+    { id: 1, start: 0, end: 8, text: 'Fragmento que ya se publicó.' },
+    { id: 2, start: 7.9, end: 9.5, text: 'Transición que toca el corte existente.' },
+    { id: 3, start: 10, end: 22, text: 'Ahora sí aparece un momento que no habíamos exportado.' },
+  ] }));
+  await saveJobRecord({ id, videoId: 'abcdefghijk', title: 'Willyrex en GTA V', sourceChannel: 'Willyrex', provider: 'gemini',
+    stage: 'done', mode: 'normal', clips: [old], format });
+  const engine = { provider: 'gemini', key: 'fake' };
+  let selections = 0;
+  t.mock.method(globalThis, 'fetch', async (_url, options) => {
+    const request = JSON.parse(options.body);
+    let value = { ideas: [] };
+    if (request.generationConfig.responseJsonSchema.properties.clips) {
+      selections++;
+      const input = JSON.parse(request.contents[0].parts[0].text);
+      assert.deepEqual(input.segments.map(({ id }) => id), [3]);
+      assert.equal(input.sourceChannel, 'Willyrex');
+      value = { clips: [{ startSegmentId: 3, endSegmentId: 3, title: 'Otro momento',
+        onScreenHook: 'El giro del final', reason: 'Una reacción nueva.', score: 9, category: 'reaccion' }] };
+    } else if (request.generationConfig.responseJsonSchema.properties.onScreenHook) {
+      assert.ok(request.contents[0].parts.some((part) => part.inline_data?.mime_type === 'image/jpeg'));
+      assert.equal(JSON.parse(request.contents[0].parts[0].text).sourceChannel, 'Willyrex');
+      value = { onScreenHook: 'A Willyrex le cortan la retirada' };
+    }
+    return Response.json({ candidates: [{ content: { parts: [{ text: JSON.stringify(value) }] } }] });
+  });
+  const finishSearch = async () => {
+    let unsubscribe;
+    const finished = new Promise((resolve) => {
+      unsubscribe = subscribeJobEvents((job) => {
+        if (job.id === id && ['done', 'error'].includes(job.stage)) resolve(job);
+      });
+    });
+    try {
+      const started = await resumeJob(id, engine, { searchMore: true });
+      assert.equal(started.id, id);
+      assert.equal(started.stage, 'selecting');
+      return await Promise.race([finished, new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('El trabajo de prueba no terminó.')), 150000).unref())]);
+    } finally { unsubscribe(); }
+  };
+  const completed = await finishSearch();
+  assert.equal(completed.stage, 'done', completed.message);
+  assert.deepEqual(completed.clips.map(({ file }) => file), ['clip-3.mp4', 'clip-4.mp4']);
+  assert.equal(completed.clips[1].onScreenHook, 'A Willyrex le cortan la retirada');
+  assert.equal(completed.clips[1].title, 'Otro momento');
+  assert.match(await readFile(join(directory, 'clip-4.ass'), 'utf8'), /Willyrex/);
+  assert.ok(completed.clips[1].start >= old.end);
+  assert.equal(await readFile(join(directory, old.file), 'utf8'), 'archivo anterior');
+  assert.equal(await readFile(join(directory, 'youtube-uploads.json'), 'utf8'), '{"clip-3.mp4":{"videoId":"ya-publicado"}}');
+  assert.equal((await getJob(id)).canSearchMore, true);
+  // Once the second cut is exported, a further pass finds no unused speech long enough.
+  const noMore = await finishSearch();
+  assert.equal(noMore.stage, 'done', noMore.message);
+  assert.match(noMore.message, /No se encontraron más/);
+  assert.equal(noMore.clips.length, 2);
+  assert.equal(selections, 1);
+});
+
+test('YouTube añade un proyecto dos horas después de la última programación real del canal', async () => {
+  const now = Date.parse('2026-11-18T16:20:00Z');
+  const latest = await getLatestScheduledUpload('test-token', 'test-uploads', { now, fetcher: async (url) => {
+    const { pathname, searchParams } = new URL(url);
+    if (pathname.endsWith('/playlistItems')) {
+      assert.equal(searchParams.get('playlistId'), 'test-uploads');
+      return Response.json(searchParams.get('pageToken')
+        ? { items: [{ contentDetails: { videoId: 'older-upload' } }] }
+        : { nextPageToken: 'next', items: [{ contentDetails: { videoId: 'recent-upload' } }] });
+    }
+    return Response.json({ items: searchParams.get('id') === 'recent-upload'
+      ? [{ status: { privacyStatus: 'private', publishAt: '2026-11-18T17:00:00Z' } }]
+      : [
+          { status: { privacyStatus: 'private', publishAt: '2026-11-18T19:30:00Z' } },
+          { status: { privacyStatus: 'private', publishAt: '2026-11-18T14:00:00Z' } },
+          { status: { privacyStatus: 'public' } },
+        ] });
+  } });
+  const first = nextPublishDate({ intervalHours: 2, latest, now });
+  assert.equal(first, '2026-11-18T21:30:00.000Z');
+  assert.equal(nextPublishDate({ intervalHours: 2, latest: Date.parse(first), now }), '2026-11-18T23:30:00.000Z');
+  assert.equal(nextPublishDate({ intervalHours: 2, now }), '2026-11-18T17:00:00.000Z');
+  await assert.rejects(getLatestScheduledUpload('test-token', 'test-uploads', {
+    fetcher: async () => new Response(null, { status: 403 }),
+  }), /No se pudo comprobar la cola/);
+});
+
+test('YouTube retoma el archivo desde el byte confirmado tras un fallo de red', async (t) => {
+  const path = join(await workspace(t), 'clip-1.mp4');
+  await writeFile(path, 'abcdef');
+  const metadata = { snippet: { title: 'Prueba' }, status: { privacyStatus: 'private' } };
+  const requests = [];
+  const fetcher = async (_url, options) => {
+    requests.push(options.headers['Content-Range'] ?? 'POST');
+    if (options.method === 'POST') return new Response(null, { headers: { location: 'https://www.googleapis.com/upload/youtube/v3/videos?upload_id=test' } });
+    if (requests.length === 2) throw new TypeError('fetch failed');
+    if (requests.length === 3) return new Response(null, { status: 308, headers: { range: 'bytes=0-2' } });
+    const chunks = [];
+    for await (const chunk of options.body) chunks.push(chunk);
+    assert.equal(Buffer.concat(chunks).toString(), 'def');
+    return Response.json({ id: 'recovered' }, { status: 201 });
+  };
+  const options = { channelId: 'test-channel', fetcher, wait: async () => {} };
+  const first = await uploadSingleClip('test-token', path, metadata, options);
+  assert.deepEqual(requests, ['POST', 'bytes 0-5/6', 'bytes */6', 'bytes 3-5/6']);
+  assert.equal(first.id, 'recovered');
+  const recovered = await uploadSingleClip('test-token', path, metadata, { ...options, fetcher: async (_url, request) => {
+    assert.equal(request.headers['Content-Range'], 'bytes */6');
+    return Response.json({ id: 'recovered' });
+  } });
+  assert.equal(recovered.id, first.id);
+});
+
+test('YouTube muestra el límite diario del canal y separa las sesiones entre destinos', async (t) => {
+  const directory = await workspace(t);
+  const path = join(directory, 'clip-3.mp4');
+  await writeFile(path, 'sample');
+  const metadata = { snippet: { title: 'Prueba' }, status: { privacyStatus: 'private' } };
+  const first = `UC${'a'.repeat(22)}`;
+  const second = `UC${'b'.repeat(22)}`;
+  await uploadSingleClip('first-token', path, metadata, {
+    channelId: first,
+    fetcher: async (_url, request) => request.method === 'POST'
+      ? new Response(null, { headers: { location: 'https://www.googleapis.com/upload/youtube/v3/videos?upload_id=first' } })
+      : Response.json({ id: 'first-video' }),
+  });
+  let calls = 0;
+  await assert.rejects(uploadSingleClip('second-token', path, metadata, {
+    channelId: second,
+    fetcher: async (_url, request) => {
+      calls++;
+      assert.equal(request.method, 'POST');
+      assert.equal(request.headers.Authorization, 'Bearer second-token');
+      return Response.json({ error: { errors: [{ reason: 'uploadLimitExceeded' }] } }, { status: 400 });
+    },
+  }), { code: 'uploadLimitExceeded', message: /límite diario de subidas/ });
+  assert.equal(calls, 1);
+});
 
 test('normaliza las preferencias y descarta formatos inválidos', () => {
   assert.deepEqual(normalizeFormat(), defaultFormat);
@@ -423,7 +581,7 @@ test('parseVideoSource y sourceFromJob reconocen YouTube y Twitch (directo, VOD 
 
 test('twitch_snapshot freeze_m3u8_snapshot congela playlists EVENT vivas con #EXT-X-ENDLIST', async (t) => {
   const directory = await workspace(t);
-  const py = process.env.CORTE_PYTHON || 'python';
+  const py = await resolvePython();
   const raw = execFileSync(py, [
     '-c',
     `import json, sys; sys.path.insert(0, 'pipeline'); import twitch_snapshot as ts
@@ -440,6 +598,19 @@ print(json.dumps({"path": path, "segs": segs, "dur": dur}))`,
   assert.match(frozen, /#EXT-X-ENDLIST$/m);
 });
 
+test('gameplay pide una acción concreta si el rótulo solo dice «mira lo que pasa»', async () => {
+  let attempts = 0;
+  const copy = await refineGameplayHook(async ({ system, parts, schema }) => {
+    attempts++;
+    assert.deepEqual(schema.required, ['onScreenHook']);
+    assert.match(system, /no demuestra por sí solo quién juega/);
+    assert.equal(JSON.parse(parts[0].text).sourceChannel, 'Compilaciones del juego');
+    return { onScreenHook: attempts === 1 ? '¡Mira lo que pasa!' : 'Mira qué pasa cuando rompe el puente' };
+  }, clip, [{ image: 'AAAA' }], transcript, 'Cruce del puente', 'Compilaciones del juego');
+  assert.deepEqual(copy, { onScreenHook: 'Mira qué pasa cuando rompe el puente' });
+  assert.equal(attempts, 2);
+});
+
 test('gameplay mantiene el título persistente todo el clip en la franja superior sobre la partida', async (t) => {
   const directory = await workspace(t);
   const { ffmpeg } = await getMediaTools();
@@ -451,9 +622,11 @@ test('gameplay mantiene el título persistente todo el clip en la franja superio
     tracks: [[{ offset: 0, x: 0.9, y: 0.38 }], [{ offset: 0, x: 0.39, y: 0.5 }]],
     regions: [{ width: 0.2, height: 0.3 }, { width: 0.7876, height: 1 }],
   };
-  const file = await renderClip(source, directory, { ...clip, end: 2.3, onScreenHook: 'EL TASER EN GTA 6 ES BRUTAL' }, transcript, plan, 1, format, { aspect: 16 / 9 });
+  const file = await renderClip(source, directory, { ...clip, end: 2.3, onScreenHook: 'Willyrex intenta robar el avión y se atasca' }, transcript, plan, 1, format, { aspect: 16 / 9 });
   const ass = await readFile(join(directory, file.replace(/\.mp4$/, '.ass')), 'utf8');
-  assert.match(ass, /Dialogue: 1,0:00:00\.00,0:00:02\.30,Hook,,0,0,0,,\{\\an5\\pos\(540,67\d\)/);
+  assert.match(ass, /Dialogue: 1,0:00:00\.00,0:00:02\.30,Hook,,0,0,0,,\{\\an5\\pos\(540,690\)/);
+  assert.ok(Number(/Style: Hook,Arial Black,(\d+)/.exec(ass)[1]) >= 72);
+  assert.match(ass.split('\n').find((line) => line.startsWith('Dialogue: 1,')), /\\N/);
 });
 
 test('generatePublicationSuggestions analiza 1 a 1 con fotogramas y guarda SEO completo', async (t) => {
@@ -496,7 +669,7 @@ test('youtube_live find_earliest_seq y parseVideoSource /live/ detectan directos
   assert.equal(ytLive.kind, 'live');
   assert.equal(ytLive.videoId, 'biUVW6Q0f2g');
 
-  const py = process.env.CORTE_PYTHON || 'python';
+  const py = await resolvePython();
   const raw = execFileSync(py, [
     '-c',
     `import json, sys; sys.path.insert(0, 'pipeline'); import youtube_live as yl
@@ -659,8 +832,12 @@ test('modo prototipo recorta la cámara del youtuber, limita <=30s, narra con lo
     start: 0,
     end: 10.5,
   }, {
-    segments: [{ start: 1.0, end: 8.5, text: 'Corre que viene la policía ahora mismo.', words: [{ start: 1.0, end: 2.0, text: 'Corre' }, { start: 2.0, end: 4.5, text: 'ahora.' }] }],
-  }, protoFraming, 1, normalizeFormat({ ratio: '9:16', layouts: ['fit'], fitCrop: 'original' }), { aspect: 16 / 9, voice: 'piper:es_ES-davefx-medium' });
+    segments: [{ start: 0.2, end: 8.5, text: 'Corre, ahora.', words: [{ start: 0.2, end: 0.54, text: 'Corre,' }, { start: 1.0, end: 2.0, text: 'ahora.' }] }],
+  }, protoFraming, 1, normalizeFormat({ ratio: '9:16', layouts: ['fit'], fitCrop: 'original' }), {
+    aspect: 16 / 9,
+    voice: 'piper:es_ES-davefx-medium',
+    audioSegments: [{ start: 5, end: 5.5, text: '¡Ya llegaron!', energy: 9 }],
+  });
 
   const meta = await probeVideo(join(directory, file));
   assert.equal(meta.width, 1080);
@@ -668,9 +845,31 @@ test('modo prototipo recorta la cámara del youtuber, limita <=30s, narra con lo
   assert.equal(meta.audio, true);
   assert.ok(meta.duration > 10 && meta.duration <= 30, `duration ${meta.duration}`);
   const ass = await readFile(join(directory, file.replace(/\.mp4$/, '.ass')), 'utf8');
-  assert.match(ass, /⏸ PAUSA/);
+  assert.match(ass, /II  PAUSA/);
+  assert.match(ass, /\\fscx1\\t\(0,\d+,\\fscx100\)/);
+  assert.match(ass, /Dialogue: 0,0:00:00\.20,0:00:00\.54,Corte/);
+  assert.match(ass, /Dialogue: 0,0:00:0[2-6]\.\d{2},[^,]+,Corte,,0,0,0,,ahora\./);
   assert.match(ass, /Style: Narrator/);
   assert.match(ass, /Willyrex/);
+});
+
+test('prototipo revisa el gancho con diálogo y fotogramas y conserva el borrador si el motor no entrega un texto válido', async () => {
+  const clip = { start: 10, end: 20, onScreenHook: 'LA MANSIÓN SECRETA', narration: 'Encontró un secreto que nadie esperaba dentro de la mansión.' };
+  const sections = { segments: [
+    { start: 0, end: 1, text: 'Fuera del corte.' },
+    { start: 10, end: 13, text: 'Lo encontré. ¡Soy la bestia!' },
+  ] };
+  const frames = [{ image: 'AAAA' }, { image: 'BBBB' }];
+  const revised = { onScreenHook: '¿Qué acaba de encontrar?', narration: 'Llevaba un rato buscando y su reacción lo dice todo.' };
+  const result = await refinePrototypeCopy(async ({ parts }) => {
+    assert.equal(parts.length, 3);
+    assert.equal(JSON.parse(parts[0].text).dialogue, 'Lo encontré. ¡Soy la bestia!');
+    assert.equal(parts[2].inline_data.data, 'BBBB');
+    return revised;
+  }, clip, frames, sections, 'Carrera en GTA');
+  assert.deepEqual(result, revised);
+  assert.deepEqual(await refinePrototypeCopy(async () => ({ ...revised, narration: 'Uy.' }), clip, frames, sections), {});
+  assert.deepEqual(await refinePrototypeCopy(async () => null, clip, frames, sections), {});
 });
 
 test('chooseFraming corrige regiones invertidas en gameplay y prototipo excluye webcam por vision', async () => {

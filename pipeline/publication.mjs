@@ -3,15 +3,16 @@ import { readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import youtube from '../dist/youtube.js';
 import { RequestError } from './errors.mjs';
-import { youtubeHandle } from './media.mjs';
+import { renameWithRetry } from './fsx.mjs';
+import { brandTag, getBrand } from './brands.mjs';
 
 const platforms = ['youtube', 'tiktok'];
 const limits = { youtube: 1200, tiktok: 1000 };
 const tagPattern = /^#?[\p{L}\p{N}_]{2,32}$/u;
 const genericTags = new Set(['fyp', 'foryou', 'foryoupage', 'parati', 'viral', 'trending', 'shorts', 'tiktok']);
 
-const publicationSystem = `# Función
-Eres director de SEO en vídeo vertical (YouTube Shorts + TikTok Search) y copywriter para RisaWOW. Escribes como un creador humano con instinto algorítmico, nunca como una IA corporativa. Preparas el paquete completo de publicación y SEO de cada recorte usando exclusivamente lo que ocurre en él, el título del vídeo fuente y su contexto.
+const publicationSystem = (brand) => `# Función
+Eres director de SEO en vídeo vertical (YouTube Shorts + TikTok Search) y copywriter para ${brand.name}. Voz de la marca: ${brand.seoVoice}. Escribes como un creador humano con instinto algorítmico, nunca como una IA corporativa. Preparas el paquete completo de publicación y SEO de cada recorte usando exclusivamente lo que ocurre en él, el título del vídeo fuente y su contexto.
 
 # Reglas anti-IA (OBLIGATORIAS)
 - PROHIBIDO sonar a bot o blog: nada de "Descubre...", "La eterna duda...", "El debate de...", "La leyenda de...", "El origen de...", "La regla de oro...", "Prepárate para...", "Te sorprenderá", "Sin palabras" o "Dime que... sin decir que...".
@@ -180,13 +181,13 @@ async function writeJson(path, value) {
   const staging = `${path}.${randomUUID()}.tmp`;
   try {
     await writeFile(staging, JSON.stringify(value, null, 2), 'utf8');
-    await rename(staging, path);
+    await renameWithRetry(staging, path);
   } finally {
     await rm(staging, { force: true }).catch(() => {});
   }
 }
 
-function buildFallbackSeo(sourceTitle, clip, spoken) {
+function buildFallbackSeo(sourceTitle, clip, spoken, brand) {
   const cleanTitle = text(clip.title || 'Momento destacado', 72);
   const hook = text(clip.onScreenHook || cleanTitle, 110);
   const gameCtx = inferGameContext(sourceTitle, clip, spoken);
@@ -196,7 +197,8 @@ function buildFallbackSeo(sourceTitle, clip, spoken) {
     .split(/\s+/)
     .filter((w) => w.length >= 3 && !genericTags.has(w))
     .slice(0, 6);
-  const tagSeeds = [...new Set([...(gameCtx?.hashtags ?? []), ...topicWords, 'gameplay', 'clips', 'risawow'])].slice(0, 5);
+  const brandTags = [...brand.defaultHashtags.map((tag) => tag.replace(/^#/, '')), ...(brand.handle ? [brandTag(brand)] : [])];
+  const tagSeeds = [...new Set([...(gameCtx?.hashtags ?? []), ...topicWords, ...brandTags])].slice(0, 5);
   const gameTitleSuffix = gameCtx?.name && !cleanTitle.toLowerCase().includes(gameCtx.name.toLowerCase())
     ? ` en ${gameCtx.name}`
     : '';
@@ -249,9 +251,12 @@ async function loadClipFrameParts(directory, clipNumber, maxImages = 3) {
  * Analyze a single rendered clip one-by-one (spoken transcript + extracted JPEG
  * frames when available) to author and save pro search-optimized SEO metadata.
  */
-export async function analyzeAndSaveClipSeo(infer, directory, sourceTitle, transcript, clip, clipNumber, { force = false, signal } = {}) {
+export async function analyzeAndSaveClipSeo(infer, directory, sourceTitle, transcript, clip, clipNumber, { force = false, signal, brand: brandInput } = {}) {
+  const brand = brandInput ?? await getBrand();
   const path = join(directory, 'publication-suggestions.json');
   const saved = (await readJson(path)) ?? {};
+  // Un vídeo largo (resumen) no usa el SEO de Shorts: su título y descripción se guardan en el borrador de YouTube.
+  if (clip.longForm) return saved[clip.file] ?? null;
   if (!force && saved[clip.file]?.seoKeywords?.length >= 4 && saved[clip.file]?.coverText) {
     return saved[clip.file];
   }
@@ -277,9 +282,10 @@ export async function analyzeAndSaveClipSeo(infer, directory, sourceTitle, trans
   };
   let suggestion = null;
   if (typeof infer === 'function') {
-    const frameParts = await loadClipFrameParts(directory, clipNumber, 3);
+    const frameNumber = Number(/^clip-(\d+)\.mp4$/.exec(clip.file)?.[1]) || clipNumber;
+    const frameParts = await loadClipFrameParts(directory, frameNumber, 3);
     const requestBase = {
-      system: publicationSystem,
+      system: publicationSystem(brand),
       schema: suggestionSchema([1]),
       maxOutputTokens: 2200,
     };
@@ -304,7 +310,7 @@ export async function analyzeAndSaveClipSeo(infer, directory, sourceTitle, trans
       }
     }
   }
-  suggestion ??= buildFallbackSeo(sourceTitle, clip, spoken);
+  suggestion ??= buildFallbackSeo(sourceTitle, clip, spoken, brand);
   if (suggestion) {
     saved[clip.file] = suggestion;
     await writeJson(path, saved);
@@ -312,11 +318,11 @@ export async function analyzeAndSaveClipSeo(infer, directory, sourceTitle, trans
   return suggestion;
 }
 
-export async function generatePublicationSuggestions(infer, directory, sourceTitle, transcript, clips, { force = false, signal, onProgress } = {}) {
+export async function generatePublicationSuggestions(infer, directory, sourceTitle, transcript, clips, { force = false, signal, onProgress, brand } = {}) {
   let completed = 0;
   for (const [index, clip] of clips.entries()) {
     onProgress?.({ index: index + 1, total: clips.length, clip });
-    const suggestion = await analyzeAndSaveClipSeo(infer, directory, sourceTitle, transcript, clip, index + 1, { force, signal });
+    const suggestion = await analyzeAndSaveClipSeo(infer, directory, sourceTitle, transcript, clip, index + 1, { force, signal, brand });
     if (suggestion) completed++;
   }
   return completed;
@@ -338,13 +344,14 @@ export async function loadPublication(directory, job, clip) {
   }));
   const seconds = Math.max(0, Math.floor(clip.start));
   const resolvedSource = youtube.sourceFromJob(job);
+  const brand = await getBrand(job.brandId);
   const sourceUrl = resolvedSource.platform === 'twitch'
     ? (resolvedSource.kind === 'clip' ? resolvedSource.url : `${resolvedSource.url}?t=${seconds}s`)
     : `https://www.youtube.com/watch?v=${encodeURIComponent(job.videoId)}&t=${seconds}s`;
   return {
-    clip: { title: clip.title, file: clip.file, start: clip.start, end: clip.end, ratio: clip.ratio ?? '9:16', url: `/media/${job.id}/${clip.file}` },
+    clip: { title: clip.title, file: clip.file, start: clip.start, end: clip.end, ratio: clip.ratio ?? '9:16', longForm: Boolean(clip.longForm), duration: clip.duration ?? null, url: `/media/${job.id}/${clip.file}` },
     source: { title: job.title, videoId: job.videoId, platform: resolvedSource.platform, url: sourceUrl },
-    publisher: { handle: youtubeHandle, url: `https://www.youtube.com/${youtubeHandle}` },
+    publisher: { brandId: brand.id, name: brand.name, handle: brand.handle, url: brand.handle ? `https://www.youtube.com/${brand.handle}` : '' },
     query: suggestion?.query ?? '',
     hook: suggestion?.hook ?? '',
     game: suggestion?.game ?? '',
