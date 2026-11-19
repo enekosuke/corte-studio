@@ -1245,7 +1245,7 @@ export async function renderClip(source, directory, clip, transcript, plan, clip
   if (timeline || sfx.length || bleeps.length || bgm) {
     const trimmed = timeline ? trimGraph(timeline, clip.start) : null;
     const voice = trimmed ? trimmed.audio : '[0:a:0]aresample=48000,aformat=channel_layouts=stereo[voice0]';
-    const audio = buildAudioGraph({ duration: outDuration, bleeps, bgm, climaxAt, sfx, firstInput: 2, loudness });
+    const audio = buildAudioGraph({ voicePolish: mediaOptions.voicePolish === true,  duration: outDuration, bleeps, bgm, climaxAt, sfx, firstInput: 2, loudness });
     graph = `${trimmed ? `${trimmed.video};` : ''}${graph};${voice};${audio.graph}`;
     extraInputs = audio.inputs;
     audioArgs = ['-map', '[aout]'];

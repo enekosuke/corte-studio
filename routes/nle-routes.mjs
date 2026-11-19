@@ -1,19 +1,18 @@
 import { randomUUID } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, rm } from 'node:fs/promises';
 import { dirname, extname, join } from 'node:path';
 import { pipeline as streamPipeline } from 'node:stream/promises';
 import { getBrand, subtitlePresets } from '../pipeline/brands.mjs';
 import { RequestError } from '../pipeline/errors.mjs';
 import { formatCatalog, normalizeFormat } from '../pipeline/formats.mjs';
-import { renameWithRetry } from '../pipeline/fsx.mjs';
 import { getClipFile, getJob, getSourceFile, getTranscript, jobsDir, saveJobRecord, startJob } from '../pipeline/jobs.mjs';
 import { probeVideo, renderClip } from '../pipeline/media.mjs';
 import { buildClipPartsForExport, generateEdl, generateFcpxml } from '../pipeline/export-nle.mjs';
 import { generateClipThumbnail, thumbnailNameForClip, thumbnailPathForClip } from '../pipeline/thumbnails.mjs';
 import { assertLocalMutation, readJsonBody } from './context.mjs';
 
-const clipEditPath = /^\/api\/jobs\/([a-f0-9-]+)\/clips\/(clip-\d+\.mp4)(\/rerender|\/thumbnail|\/export-edl)?$/;
+const clipEditPath = /^\/api\/jobs\/([a-f0-9-]+)\/clips\/(clip-\d+\.mp4)(\/rerender|\/thumbnail|\/export-edl|\/hook-variants)?$/;
 const allowedVideoExt = new Set(['.mp4', '.mkv', '.mov', '.webm']);
 const maxUploadBytes = 8 * 1024 * 1024 * 1024; // 8 GB local OBS recording
 
@@ -50,6 +49,7 @@ function sanitizeEdits(input = {}, clip = {}) {
     edits.layoutOverride = input.layoutOverride || undefined;
   }
   if (input.removeSilences !== undefined) edits.removeSilences = Boolean(input.removeSilences);
+  if (input.voicePolish !== undefined) edits.voicePolish = Boolean(input.voicePolish);
   if (input.brandId !== undefined) edits.brandId = String(input.brandId ?? '').trim() || undefined;
   if (Array.isArray(input.wordOverrides)) {
     edits.wordOverrides = input.wordOverrides
@@ -204,6 +204,23 @@ export async function handleNleRoute({ request, response, pathname, searchParams
     return true;
   }
 
+  if (rerender === '/hook-variants' && request.method === 'POST') {
+    const body = await readJsonBody(request, origin, 4096).catch(() => ({}));
+    const job = await getJob(id);
+    if (!job) throw new RequestError(404, 'Proyecto no encontrado.');
+    const clip = (job.clips ?? []).find((c) => c.file === file);
+    if (!clip) throw new RequestError(404, 'Clip no encontrado.');
+    const base = String(body.baseHook || clip.edits?.onScreenHook || clip.onScreenHook || clip.title || '').trim();
+    const cleanBase = base.replace(/[.!?]+$/, '').slice(0, 44);
+    const variants = [
+      { id: 'curiosity', label: 'Curiosidad', hook: `Mira qué pasa justo aquí: ${cleanBase}`.slice(0, 56), coldOpen: true },
+      { id: 'direct', label: 'Choque directo', hook: `${cleanBase} (nadie vio esto)`.slice(0, 56), coldOpen: false },
+      { id: 'stakes', label: 'Tensión / Riesgo', hook: `3 segundos antes del caos: ${cleanBase}`.slice(0, 56), coldOpen: true },
+    ];
+    sendJson(response, 200, { ok: true, file, variants });
+    return true;
+  }
+
   if (rerender === '/rerender' && request.method === 'POST') {
     const body = await readJsonBody(request, origin, 16_384).catch(() => ({}));
     const job = await getJob(id);
@@ -247,7 +264,9 @@ export async function handleNleRoute({ request, response, pathname, searchParams
     await renderClip(sourcePath, directory, effectiveClip, transcript, plan, clipNum, format, {
       aspect: media.aspect,
       brand,
-      removeSilences: edits.removeSilences,
+      jumpCuts: edits.removeSilences,
+      audioSegments: transcript.segments,
+      voicePolish: edits.voicePolish === true,
     });
 
     clip.start = effectiveStart;

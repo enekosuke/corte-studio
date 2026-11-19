@@ -7,6 +7,42 @@
   // Studio de Miniaturas JPG, Exportación EDL/FCPXML, Cola FIFO, Upload Local, Gestor de Disco y Barra NLE.
 
   const byId = (id) => document.getElementById(id);
+  // V5: Inyectar focusPrompt en POST /api/jobs de forma transparente
+  const _origFetch = window.fetch.bind(window);
+  window.fetch = (input, init) => {
+    try {
+      const url = typeof input === 'string' ? input : input?.url || '';
+      if (url.endsWith('/api/jobs') && init?.method?.toUpperCase() === 'POST' && typeof init.body === 'string') {
+        const focusEl = byId('v5-focus-prompt');
+        const fp = focusEl?.value?.trim();
+        if (fp) {
+          const parsed = JSON.parse(init.body);
+          parsed.focusPrompt = fp;
+          init = { ...init, body: JSON.stringify(parsed) };
+        }
+      }
+    } catch {}
+    return _origFetch(input, init);
+  };
+
+  // V5: Selector de tema (Carbon Pro / Midnight Cinema / Studio Light)
+  const THEMES = ['carbon', 'midnight', 'light'];
+  const THEME_LABELS = { carbon: 'Carbon Pro', midnight: 'Midnight', light: 'Light Pro' };
+  let themeIdx = 0;
+  function applyTheme(name) {
+    const t = THEMES.includes(name) ? name : 'carbon';
+    themeIdx = THEMES.indexOf(t);
+    document.documentElement.setAttribute('data-theme', t);
+    try { localStorage.setItem('corte-v5-theme', t); } catch {}
+    const btn = byId('pro-theme-btn');
+    if (btn) btn.textContent = THEME_LABELS[t];
+  }
+  function cycleTheme() {
+    const next = THEMES[(themeIdx + 1) % THEMES.length];
+    applyTheme(next);
+    toast(`Tema visual: ${THEME_LABELS[next]}`, 'info', 2000);
+  }
+  const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const fmtBytes = (b = 0) => (b >= 1e9 ? `${(b / 1e9).toFixed(2)} GB` : b >= 1e6 ? `${(b / 1e6).toFixed(1)} MB` : b >= 1e3 ? `${(b / 1e3).toFixed(0)} KB` : `${b} B`);
 
   const SAFE_ZONES = {
@@ -137,12 +173,12 @@
             row.className = 'pro-row';
             row.innerHTML = `
               <div>
-                <div style="font-weight:600;color:var(--ink);font-size:13.5px">${b.name} <span style="color:var(--muted);font-family:var(--mono);font-size:12px">${b.handle || '(sin @handle)'}</span> ${state.defaultBrandId === b.id ? '<span class="pro-badge">Activa</span>' : ''}</div>
-                <div style="font-size:12px;color:var(--muted);margin-top:2px">Preset: <code>${b.subtitlePreset}</code> · Acento: <span style="color:${b.accentHex}">${b.accentHex}</span> · SFX: ${b.sfx ? 'Sí' : 'No'} · Bleep: ${b.bleepProfanity ? 'Sí' : 'No'}</div>
+                <div style="font-weight:600;color:var(--ink);font-size:13.5px">${esc(b.name)} <span style="color:var(--muted);font-family:var(--mono);font-size:12px">${esc(b.handle || '(sin @handle)')}</span> ${state.defaultBrandId === b.id ? '<span class="pro-badge">Activa</span>' : ''}</div>
+                <div style="font-size:12px;color:var(--muted);margin-top:2px">Preset: <code>${esc(b.subtitlePreset)}</code> · Acento: <span style="color:${esc(b.accentHex)}">${esc(b.accentHex)}</span> · SFX: ${b.sfx ? 'Sí' : 'No'} · Bleep: ${b.bleepProfanity ? 'Sí' : 'No'}</div>
               </div>
               <div style="display:flex;gap:6px">
-                ${state.defaultBrandId !== b.id ? `<button class="pro-btn" data-default="${b.id}">Activar</button>` : ''}
-                ${b.id !== 'default' ? `<button class="pro-btn danger" data-del="${b.id}">Borrar</button>` : ''}
+                ${state.defaultBrandId !== b.id ? `<button class="pro-btn" data-default="${esc(b.id)}">Activar</button>` : ''}
+                ${b.id !== 'default' ? `<button class="pro-btn danger" data-del="${esc(b.id)}">Borrar</button>` : ''}
               </div>`;
             list.appendChild(row);
           }
@@ -156,7 +192,7 @@
               <label class="pro-field">Nombre<input name="name" placeholder="Mi Canal Pro" required></label>
               <label class="pro-field">@Handle (marca de agua)<input name="handle" placeholder="@MiCanal"></label>
               <label class="pro-field">Preset de subtítulos
-                <select name="subtitlePreset">${CAPTION_PRESETS.map((p) => `<option value="${p.id}">${p.label} (${p.id})</option>`).join('')}</select>
+                <select name="subtitlePreset">${CAPTION_PRESETS.map((p) => `<option value="${esc(p.id)}">${p.label} (${esc(p.id)})</option>`).join('')}</select>
               </label>
               <label class="pro-field">Color de acento<input name="accentHex" type="color" value="#FFE600"></label>
               <label class="pro-field">Tono SEO<input name="seoVoice" placeholder="creador directo con ritmo rápido"></label>
@@ -203,7 +239,7 @@
           }));
         };
         render(data);
-      } catch (err) { body.innerHTML = `<div style="color:#fca5a5">${err.message}</div>`; }
+      } catch (err) { body.innerHTML = `<div style="color:#fca5a5">${esc(err.message)}</div>`; }
     });
   }
 
@@ -233,12 +269,12 @@
           row.className = 'pro-row';
           row.innerHTML = `
             <div style="min-width:0">
-              <div style="font-weight:600;color:var(--ink);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${p.title}</div>
+              <div style="font-weight:600;color:var(--ink);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(p.title)}</div>
               <div style="font-size:11.5px;color:var(--muted);font-family:var(--mono)">${fmtBytes(p.bytes.total)} (VOD ${fmtBytes(p.bytes.source)} · ${p.clipCount} clips)</div>
             </div>
             <div style="display:flex;gap:6px;flex:none">
-              ${p.hasSource && !p.active ? `<button class="pro-btn" data-keep="${p.id}">Quitar VOD</button>` : ''}
-              ${!p.active ? `<button class="pro-btn danger" data-rm="${p.id}">Borrar</button>` : '<span class="pro-badge">Activo</span>'}
+              ${p.hasSource && !p.active ? `<button class="pro-btn" data-keep="${esc(p.id)}">Quitar VOD</button>` : ''}
+              ${!p.active ? `<button class="pro-btn danger" data-rm="${esc(p.id)}">Borrar</button>` : '<span class="pro-badge">Activo</span>'}
             </div>`;
           list.appendChild(row);
         }
@@ -253,7 +289,7 @@
           load();
         }));
       };
-      try { await load(); } catch (err) { body.innerHTML = `<div style="color:#fca5a5">${err.message}</div>`; }
+      try { await load(); } catch (err) { body.innerHTML = `<div style="color:#fca5a5">${esc(err.message)}</div>`; }
     });
   }
 
@@ -300,10 +336,10 @@
           row.className = 'pro-row';
           row.innerHTML = `
             <div style="min-width:0">
-              <div style="font-weight:600;color:var(--ink);font-size:13px">#${idx + 1} · ${item.label}</div>
-              <div style="font-size:11.5px;color:var(--muted);font-family:var(--mono)">Modo: ${item.mode} · Motor: ${item.provider}</div>
+              <div style="font-weight:600;color:var(--ink);font-size:13px">#${idx + 1} · ${esc(item.label)}</div>
+              <div style="font-size:11.5px;color:var(--muted);font-family:var(--mono)">Modo: ${esc(item.mode)} · Motor: ${esc(item.provider)}</div>
             </div>
-            <button class="pro-btn danger" data-qdel="${item.queueId}">Quitar</button>`;
+            <button class="pro-btn danger" data-qdel="${esc(item.queueId)}">Quitar</button>`;
           list.appendChild(row);
         });
         list.querySelectorAll('[data-qdel]').forEach((b) => b.addEventListener('click', async () => {
@@ -338,11 +374,12 @@
       <div class="pro-tab-pane active" data-pane="trim">
         <div id="pro-score-slot"></div>
         <div id="pro-diag-slot"></div>
+        <div id="v5-ab-slot" class="v5-variant-list"></div>
         <div class="pro-form-grid">
           <label class="pro-field">Inicio (seg · tecla I)<input type="number" step="0.1" id="pro-nle-start"></label>
           <label class="pro-field">Fin (seg · tecla O)<input type="number" step="0.1" id="pro-nle-end"></label>
         </div>
-        <label class="pro-field">Rótulo en pantalla (<span id="pro-hook-len">0</span>/56)
+        <label class="pro-field"><span>Rótulo en pantalla (<span id="pro-hook-len">0</span>/56)</span>
           <input type="text" id="pro-nle-hook" maxlength="72" placeholder="Frase gancho con acción concreta…">
         </label>
         <div class="pro-form-grid">
@@ -358,6 +395,10 @@
               <option value="fit">Fit (Plano general)</option>
             </select>
           </label>
+          <label class="pro-field">Studio Voice Polish
+            <select id="pro-nle-polish"><option value="false">Original</option><option value="true">Broadcast Pro (EQ+Norm)</option></select>
+          </label>
+          <div style="display:flex;align-items:flex-end"><button type="button" class="pro-btn" id="pro-nle-ab" style="width:100%;justify-content:center">Variantes A/B Hook</button></div>
         </div>
       </div>
 
@@ -475,6 +516,8 @@
       byId('pro-hook-len').textContent = String(byId('pro-nle-hook').value.length);
       byId('pro-nle-silences').value = String(clip.edits?.removeSilences !== false);
       byId('pro-nle-layout').value = clip.edits?.layoutOverride || '';
+      byId('pro-nle-polish').value = String(clip.edits?.voicePolish === true);
+      byId('v5-ab-slot').innerHTML = '';
       byId('pro-thumb-text').value = (clip.edits?.onScreenHook || clip.onScreenHook || clip.title || '').toUpperCase().slice(0, 26);
 
       const thumbImg = byId('pro-thumb-img');
@@ -563,6 +606,31 @@
     finally { btn.disabled = false; btn.textContent = 'Generar miniatura JPG'; }
   });
 
+  byId('pro-nle-ab').addEventListener('click', async () => {
+    const { jobId, file } = dock.dataset;
+    if (!jobId || !file) return;
+    try {
+      const res = await api(`/api/jobs/${jobId}/clips/${file}/hook-variants`, {
+        method: 'POST',
+        body: JSON.stringify({ baseHook: byId('pro-nle-hook').value }),
+      });
+      const slot = byId('v5-ab-slot');
+      slot.innerHTML = '';
+      for (const v of res.variants || []) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'v5-variant-btn';
+        b.innerHTML = `<span style="font-family:var(--mono);font-size:10.5px;color:var(--accent-pro);text-transform:uppercase">${esc(v.label)}</span><div style="margin-top:2px">${esc(v.hook)}</div>`;
+        b.addEventListener('click', () => {
+          byId('pro-nle-hook').value = v.hook;
+          byId('pro-hook-len').textContent = String(v.hook.length);
+          toast(`Gancho "${v.label}" aplicado. Pulsa Re-renderizar.`, 'ok', 2200);
+        });
+        slot.appendChild(b);
+      }
+    } catch (err) { toast(err.message, 'err'); }
+  });
+
   byId('pro-nle-rerender').addEventListener('click', async () => {
     const { jobId, file } = dock.dataset;
     if (!jobId || !file) return;
@@ -577,6 +645,7 @@
         subtitlePreset: selectedPresetId,
         removeSilences: byId('pro-nle-silences').value === 'true',
         layoutOverride: byId('pro-nle-layout').value,
+        voicePolish: byId('pro-nle-polish').value === 'true',
         wordOverrides: [...pendingWordOverrides.entries()].map(([index, text]) => ({ index, text })),
       };
       const res = await api(`/api/jobs/${jobId}/clips/${file}/rerender`, { method: 'POST', body: JSON.stringify(payload) });
@@ -669,6 +738,7 @@
         <button type="button" class="pro-btn" id="pro-queue-btn">Cola <span class="pro-badge" id="pro-queue-badge">0</span></button>
         <button type="button" class="pro-btn" id="pro-storage-btn">Disco</button>
         <button type="button" class="pro-btn" id="pro-nle-btn">Inspector NLE</button>
+        <button type="button" class="pro-btn" id="pro-theme-btn" title="Cambiar tema visual">Carbon Pro</button>
         <button type="button" class="pro-btn" id="pro-eco-btn">Eco</button>
         <button type="button" class="pro-btn" id="pro-cmd-btn"><span class="pro-kbd">⌘K</span></button>`;
       headerAnchor.appendChild(bar);
@@ -677,7 +747,9 @@
       byId('pro-queue-btn').addEventListener('click', showQueueModal);
       byId('pro-storage-btn').addEventListener('click', showStorageModal);
       byId('pro-nle-btn').addEventListener('click', openNleInspector);
+      byId('pro-theme-btn').addEventListener('click', cycleTheme);
       byId('pro-eco-btn').addEventListener('click', toggleEcoMode);
+      try { applyTheme(localStorage.getItem('corte-v5-theme') || 'carbon'); } catch { applyTheme('carbon'); }
       byId('pro-cmd-btn').addEventListener('click', showCommandPalette);
       if (document.body.classList.contains('eco-mode')) byId('pro-eco-btn').classList.add('active');
       refreshQueueBadge();
@@ -685,6 +757,15 @@
 
     // 2. Local File Dropzone
     const form = byId('source-form');
+    // 2b. V5 Prompt-Directed Clipping bar inside/below #source-form
+    if (form && !byId('v5-focus-wrap')) {
+      const fw = document.createElement('div');
+      fw.className = 'v5-focus-wrap';
+      fw.id = 'v5-focus-wrap';
+      fw.innerHTML = `<span class="v5-focus-tag">Enfoque IA</span><input id="v5-focus-prompt" class="v5-focus-input" type="text" maxlength="260" placeholder="Opcional: dime qué momentos buscar (ej. solo sustos, clutches o consejos de dinero)…">`;
+      form.insertAdjacentElement('afterend', fw);
+    }
+
     if (form && !byId('pro-dropzone')) {
       const dz = document.createElement('div');
       dz.className = 'pro-dropzone';
@@ -706,7 +787,7 @@
       sb.id = 'pro-statusbar';
       sb.innerHTML = `
         <div class="pro-status-group">
-          <span><span class="pro-dot"></span>Corte Studio v4 Pro</span>
+          <span><span class="pro-dot"></span>Corte Studio v5 Pro</span>
           <span id="pro-status-brand">Marca: cargando…</span>
         </div>
         <div class="pro-status-group pro-hide-sm">

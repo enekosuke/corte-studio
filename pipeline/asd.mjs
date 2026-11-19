@@ -69,7 +69,7 @@ export function speakerTrack(decision, analysis) {
   for (const segment of decision.segments) {
     if (segment.speaker !== 'both') current = segment.speaker;
     const slot = analysis.slots[current];
-    const point = { offset: Number(segment.start.toFixed(3)), x: Number((slot.x + slot.w / 2).toFixed(4)), y: Number(Math.min(0.9, slot.y + slot.h * 0.55).toFixed(4)) };
+    const point = { offset: Number(segment.start.toFixed(3)), x: Number((slot.x + slot.w / 2).toFixed(4)), y: Number(Math.min(0.9, slot.y + slot.h * 0.48).toFixed(4)) };
     const previous = track.at(-1);
     if (previous && Math.abs(previous.x - point.x) < 0.02) continue;
     track.push({ ...point, cutBefore: Boolean(previous) });

@@ -1,0 +1,424 @@
+/* ============================================================================
+   CORTE STUDIO V5 — ULTRA-PREMIUM PRO NLE DESIGN SYSTEM
+   Estética inspirada en Linear · Frame.io · DaVinci Resolve · Apple Pro Apps
+   3 temas calibrados: Carbon Pro (default) · Midnight Cinema · Studio Light
+   Cero estética genérica "app de IA" · 100% GPU-only micro-interacciones
+   ============================================================================ */
+
+:root,
+[data-theme="carbon"] {
+  color-scheme: dark;
+  --bg: #08090b;
+  --bg-elev: #0f1116;
+  --surface: #14171f;
+  --surface-2: #1b1f2a;
+  --ink: #f5f6f8;
+  --text: #ced3de;
+  --muted: #848c9e;
+  --line: rgba(255, 255, 255, 0.075);
+  --line-bright: rgba(255, 255, 255, 0.16);
+  --specular: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  --purple: #f4f5f7;
+  --purple-dark: #ffffff;
+  --purple-deep: #e2e5ec;
+  --cta-ink: #090a0d;
+  --accent-pro: #f59e0b;
+  --cyan: #38bdf8;
+  --emerald: #10b981;
+  --amber: #f59e0b;
+  --danger: #ef4444;
+  --glass: rgba(15, 17, 22, 0.82);
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+[data-theme="midnight"] {
+  color-scheme: dark;
+  --bg: #070b12;
+  --bg-elev: #0d1320;
+  --surface: #121a2b;
+  --surface-2: #19243b;
+  --ink: #f1f5f9;
+  --text: #cbd5e1;
+  --muted: #7e90ac;
+  --line: rgba(148, 163, 184, 0.12);
+  --line-bright: rgba(148, 163, 184, 0.24);
+  --specular: inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  --purple: #3b82f6;
+  --purple-dark: #60a5fa;
+  --purple-deep: #2563eb;
+  --cta-ink: #ffffff;
+  --accent-pro: #38bdf8;
+  --glass: rgba(13, 19, 32, 0.84);
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f3f4f6;
+  --bg-elev: #ffffff;
+  --surface: #f8f9fb;
+  --surface-2: #eef0f4;
+  --ink: #0f172a;
+  --text: #334155;
+  --muted: #64748b;
+  --line: rgba(15, 23, 42, 0.09);
+  --line-bright: rgba(15, 23, 42, 0.18);
+  --specular: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  --purple: #0f172a;
+  --purple-dark: #1e293b;
+  --purple-deep: #020617;
+  --cta-ink: #ffffff;
+  --accent-pro: #d97706;
+  --cyan: #0284c7;
+  --emerald: #059669;
+  --amber: #d97706;
+  --danger: #dc2626;
+  --glass: rgba(255, 255, 255, 0.86);
+}
+
+/* --- GLOBAL CANVAS & TYPOGRAPHY --- */
+body {
+  background:
+    radial-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+    var(--bg) !important;
+  background-size: 24px 24px !important;
+  color: var(--ink) !important;
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+  -webkit-font-smoothing: antialiased;
+}
+
+[data-theme="light"] body {
+  background:
+    radial-gradient(rgba(15, 23, 42, 0.05) 1px, transparent 1px),
+    var(--bg) !important;
+  background-size: 24px 24px !important;
+}
+
+/* Scrollbars de estudio minimalistas */
+::-webkit-scrollbar { width: 7px; height: 7px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--line-bright); border-radius: 99px; }
+::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+
+/* --- TOPBAR / HEADER --- */
+header, .topbar, .studio-header {
+  background: var(--glass) !important;
+  backdrop-filter: blur(18px) saturate(145%) !important;
+  -webkit-backdrop-filter: blur(18px) saturate(145%) !important;
+  border-bottom: 1px solid var(--line) !important;
+  box-shadow: none !important;
+}
+
+/* --- CARDS, PANELS, MENUS & DROPDOWNS --- */
+#projects-dropdown-menu,
+#auto-publish-drawer,
+#publication-dialog,
+.card, .panel, .source-card, .hero-card,
+#clip-spotlight, #clips, #summary-panel, #project-timeline-dock {
+  background: var(--bg-elev) !important;
+  border: 1px solid var(--line) !important;
+  box-shadow: var(--specular), 0 18px 44px rgba(0, 0, 0, 0.28) !important;
+  border-radius: 12px !important;
+}
+
+[data-theme="light"] #projects-dropdown-menu,
+[data-theme="light"] #auto-publish-drawer,
+[data-theme="light"] #publication-dialog,
+[data-theme="light"] .card,
+[data-theme="light"] .source-card,
+[data-theme="light"] #project-timeline-dock {
+  box-shadow: var(--specular), 0 10px 30px rgba(15, 23, 42, 0.08) !important;
+}
+
+/* --- INPUTS, SELECTS & TEXTAREAS --- */
+input:not([type="checkbox"]):not([type="radio"]):not([type="color"]):not([type="range"]),
+select,
+textarea {
+  background: var(--bg) !important;
+  color: var(--ink) !important;
+  border: 1px solid var(--line-bright) !important;
+  border-radius: 8px !important;
+  transition: border-color 140ms var(--ease), box-shadow 140ms var(--ease) !important;
+}
+
+input:focus, select:focus, textarea:focus {
+  border-color: var(--accent-pro) !important;
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.14) !important;
+  outline: none !important;
+}
+
+/* --- PRIMARY & SECONDARY BUTTONS --- */
+button[type="submit"],
+.btn-primary,
+.primary-btn,
+.pro-btn.primary {
+  background: var(--purple) !important;
+  color: var(--cta-ink) !important;
+  border: 1px solid transparent !important;
+  font-weight: 600 !important;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25) !important;
+  transition: transform 110ms var(--ease), opacity 140ms var(--ease), background 140ms var(--ease) !important;
+}
+
+button[type="submit"]:hover,
+.btn-primary:hover,
+.primary-btn:hover,
+.pro-btn.primary:hover {
+  background: var(--purple-deep) !important;
+  transform: translateY(-0.5px);
+}
+
+button[type="submit"]:active,
+.pro-btn:active {
+  transform: translateY(0.5px) scale(0.99);
+}
+
+/* Mode Switcher segmented precision look */
+#mode-normal-btn, #mode-prototype-btn, #mode-summary-btn {
+  border-radius: 8px !important;
+  border: 1px solid var(--line) !important;
+  background: var(--surface) !important;
+  color: var(--muted) !important;
+  transition: all 160ms var(--ease) !important;
+}
+
+#mode-normal-btn.active, #mode-prototype-btn.active, #mode-summary-btn.active,
+#mode-normal-btn[aria-pressed="true"], #mode-prototype-btn[aria-pressed="true"], #mode-summary-btn[aria-pressed="true"] {
+  background: var(--surface-2) !important;
+  border-color: var(--accent-pro) !important;
+  color: var(--ink) !important;
+  box-shadow: var(--specular) !important;
+}
+
+/* --- CLIP CARDS IN EDITOR --- */
+#job-clips > *, .clip-card {
+  background: var(--surface) !important;
+  border: 1px solid var(--line) !important;
+  border-radius: 10px !important;
+  transition: border-color 150ms var(--ease), transform 150ms var(--ease), background 150ms var(--ease) !important;
+  contain: layout paint;
+}
+
+#job-clips > *:hover, .clip-card:hover {
+  border-color: var(--line-bright) !important;
+  background: var(--surface-2) !important;
+  transform: translateY(-1.5px);
+}
+
+/* --- TIMELINE & PLAYHEAD PRECISION --- */
+#timeline-playhead {
+  background: var(--accent-pro) !important;
+  box-shadow: 0 0 10px rgba(245, 158, 11, 0.55) !important;
+}
+
+/* --- V5 FOCUS PROMPT INPUT ON HOME --- */
+.v5-focus-wrap {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 9px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  box-shadow: var(--specular);
+}
+
+.v5-focus-tag {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent-pro);
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.25);
+}
+
+.v5-focus-input {
+  flex: 1;
+  border: none !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  color: var(--ink) !important;
+  font-size: 13px !important;
+  height: 26px !important;
+  padding: 0 4px !important;
+}
+
+/* --- A/B HOOK VARIANTS CHIPS IN INSPECTOR --- */
+.v5-variant-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.v5-variant-btn {
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 12.5px;
+  transition: border-color 130ms var(--ease), background 130ms var(--ease);
+}
+
+.v5-variant-btn:hover {
+  border-color: var(--accent-pro);
+  background: var(--surface-2);
+}
+
+/* Status bar theme harmony */
+.pro-statusbar {
+  background: var(--bg-elev) !important;
+  border-top: 1px solid var(--line) !important;
+}
+
+/* === V5.1 COMPLETE MULTI-THEME OVERRIDES (Carbon Pro · Midnight Cinema · Studio Light) === */
+.launcher-card,
+.source.launcher-card {
+  background: var(--bg-elev) !important;
+  border: 1px solid var(--line-bright) !important;
+  box-shadow: var(--specular), 0 24px 60px rgba(0, 0, 0, 0.36) !important;
+}
+
+.source-heading h2 {
+  color: var(--ink) !important;
+}
+
+.source-heading p,
+.intro p,
+.engine-options label,
+.source-note {
+  color: var(--muted) !important;
+}
+
+.intro h1 {
+  color: var(--ink) !important;
+}
+
+.intro-eyebrow {
+  background: var(--surface) !important;
+  border: 1px solid var(--line-bright) !important;
+  color: var(--text) !important;
+}
+
+.projects-trigger {
+  background: var(--surface) !important;
+  border: 1px solid var(--line-bright) !important;
+  color: var(--ink) !important;
+}
+
+.projects-trigger:hover,
+.projects-trigger[aria-expanded='true'] {
+  background: var(--surface-2) !important;
+  border-color: var(--accent-pro) !important;
+}
+
+.projects-count-pill {
+  background: var(--surface-2) !important;
+  color: var(--cyan) !important;
+  border: 1px solid var(--line) !important;
+}
+
+.mode-switch {
+  background: var(--bg) !important;
+  border: 1px solid var(--line) !important;
+}
+
+.mode-switch-btn {
+  background: transparent !important;
+  border: 1px solid transparent !important;
+  color: var(--muted) !important;
+}
+
+.mode-switch-btn.is-active,
+.mode-switch-btn[aria-checked="true"] {
+  background: var(--surface-2) !important;
+  border-color: var(--accent-pro) !important;
+  color: var(--ink) !important;
+  box-shadow: var(--specular) !important;
+}
+
+.mode-switch-btn .mode-tag {
+  background: var(--surface) !important;
+  color: var(--muted) !important;
+  border: 1px solid var(--line) !important;
+}
+
+.format-toggle,
+#format-toggle-btn,
+button.ghost,
+.ghost-button {
+  background: var(--surface) !important;
+  color: var(--ink) !important;
+  border: 1px solid var(--line-bright) !important;
+}
+
+.format-toggle:hover,
+#format-toggle-btn:hover {
+  background: var(--surface-2) !important;
+  border-color: var(--accent-pro) !important;
+}
+
+.pro-dropzone {
+  background: var(--surface) !important;
+  border: 1px dashed var(--line-bright) !important;
+  color: var(--text) !important;
+}
+
+.pro-dropzone strong {
+  color: var(--ink) !important;
+}
+
+/* Studio Light crisp elevation & readability */
+[data-theme="light"] .launcher-card,
+[data-theme="light"] .source.launcher-card {
+  background: #ffffff !important;
+  border: 1px solid rgba(15, 23, 42, 0.12) !important;
+  box-shadow: 0 20px 50px rgba(15, 23, 42, 0.08), 0 1px 2px rgba(15, 23, 42, 0.04) !important;
+}
+
+[data-theme="light"] .source-icon {
+  background: rgba(15, 23, 42, 0.06) !important;
+  border-color: rgba(15, 23, 42, 0.12) !important;
+  color: #0f172a !important;
+}
+
+[data-theme="light"] .intro-eyebrow {
+  background: #ffffff !important;
+  border-color: rgba(15, 23, 42, 0.12) !important;
+  color: #334155 !important;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05) !important;
+}
+
+[data-theme="light"] .pro-dropzone {
+  background: #f8fafc !important;
+  border-color: rgba(15, 23, 42, 0.18) !important;
+}
+
+[data-theme="light"] .mode-switch {
+  background: #f1f5f9 !important;
+  border-color: rgba(15, 23, 42, 0.10) !important;
+}
+
+[data-theme="light"] .mode-switch-btn.is-active,
+[data-theme="light"] .mode-switch-btn[aria-checked="true"] {
+  background: #ffffff !important;
+  color: #0f172a !important;
+  border-color: #d97706 !important;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08) !important;
+}
+
+[data-theme="light"] .pro-status-bar {
+  background: rgba(255, 255, 255, 0.92) !important;
+  border-top: 1px solid rgba(15, 23, 42, 0.10) !important;
+  color: #334155 !important;
+}
+
+[data-theme="light"] .pro-badge { background: rgba(15, 23, 42, 0.09) !important; color: #0f172a !important; }

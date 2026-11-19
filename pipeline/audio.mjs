@@ -79,11 +79,17 @@ const between = (ranges) => ranges.map(({ start, end }) => `between(t,${seconds(
  * Orden: censura -> música con ducking (y silencio antes del clímax) -> efectos -> sonoridad final.
  * `firstInput` es el índice de entrada de FFmpeg de la primera entrada extra; `inputs` son los argumentos -i correspondientes.
  */
-export function buildAudioGraph({ duration, bleeps = [], bgm = null, climaxAt = null, sfx = [], firstInput = 2, loudness = 'loudnorm=I=-16:TP=-1.5:LRA=11', voiceLabel = 'voice0' }) {
+export const VOICE_POLISH_CHAIN = 'highpass=f=80,afftdn=nf=-25,dynaudnorm=f=150:g=15:p=0.9,equalizer=f=3200:t=q:w=1.5:g=2.5';
+
+export function buildAudioGraph({ duration, bleeps = [], bgm = null, climaxAt = null, sfx = [], firstInput = 2, loudness = 'loudnorm=I=-16:TP=-1.5:LRA=11', voiceLabel = 'voice0', voicePolish = false }) {
   const graph = [];
   const inputs = [];
   let next = firstInput;
   let voice = voiceLabel;
+  if (voicePolish) {
+    graph.push(`[${voice}]${VOICE_POLISH_CHAIN}[voice_polished]`);
+    voice = 'voice_polished';
+  }
   if (bleeps.length) {
     const active = between(bleeps);
     graph.push(`[${voice}]volume='1-gt(${active},0)':eval=frame[voice_muted]`);

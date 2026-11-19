@@ -494,7 +494,7 @@ async function findCachedSourceByVideoId(videoId) {
   return null;
 }
 
-export async function startJob(sourceOrId, engine, retryJobId, format = defaultFormat, { mode = 'normal', voice = 'piper:es_ES-davefx-medium', summaryOptions, brandId, preloadedDir, preloadedSource } = {}) {
+export async function startJob(sourceOrId, engine, retryJobId, format = defaultFormat, { mode = 'normal', voice = 'piper:es_ES-davefx-medium', summaryOptions, brandId, preloadedDir, preloadedSource, focusPrompt = '' } = {}) {
   const source = sourceOrId?.platform === 'local' ? sourceOrId : youtube.sourceFromJob(sourceOrId);
   const videoId = source.videoId;
   const videoMode = ['prototype', 'summary'].includes(mode) ? mode : 'normal';
@@ -552,6 +552,7 @@ export async function startJob(sourceOrId, engine, retryJobId, format = defaultF
     ...(videoMode === 'prototype' ? { voice } : {}),
     ...(cleanSummary ? { summaryOptions: cleanSummary } : {}),
     brandId: (await getBrand(brandId)).id,
+    ...(typeof focusPrompt === 'string' && focusPrompt.trim() ? { focusPrompt: focusPrompt.trim().slice(0, 260) } : {}),
     provider: engine.provider,
     modelId: engine.model?.id,
     localModel: engine.provider === 'local' ? engine.model?.label : undefined,

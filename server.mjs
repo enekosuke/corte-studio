@@ -52,6 +52,7 @@ const files = new Map([
   ['/publication.js', ['publication.js', 'text/javascript; charset=utf-8']],
   ['/pro-studio.js', ['pro-studio.js', 'text/javascript; charset=utf-8']],
   ['/pro-studio.css', ['pro-studio.css', 'text/css; charset=utf-8']],
+  ['/v5-theme.css', ['v5-theme.css', 'text/css; charset=utf-8']],
   [asset, ['assets/podcast.png', 'image/png']],
 ]);
 
@@ -356,12 +357,12 @@ createServer(async (request, response) => {
       return sendJson(response, 200, { gemini: Boolean(geminiKey), openrouter: Boolean(openRouterKey), openrouterModel, models, voices, exportDir: exportRoot });
     }
     if (pathname === '/api/jobs' && request.method === 'POST') {
-      const { url, retryJobId, provider = 'gemini', model: modelId, format, mode = 'normal', voice, targetMinutes, captions, brandId } = await readStudioRequest(request, 5000);
+      const { url, retryJobId, provider = 'gemini', model: modelId, format, mode = 'normal', voice, targetMinutes, captions, brandId, focusPrompt } = await readStudioRequest(request, 5000);
       const source = typeof url === 'string' && youtube.parseVideoSource(url.trim());
       if (!source) throw new RequestError(400, 'Introduce un enlace válido de YouTube o Twitch (vídeo, clip o directo).');
       const engine = await resolveEngine(provider, modelId);
       const cleanVoice = typeof voice === 'string' && /^(?:piper|edge):[\w.-]+$/i.test(voice.trim()) ? voice.trim() : 'piper:es_ES-davefx-medium';
-      return sendJson(response, 202, await startJob(source, engine, retryJobId, normalizeFormat(format), { mode, voice: cleanVoice, summaryOptions: { targetMinutes, captions }, brandId: typeof brandId === 'string' ? brandId : undefined }));
+      return sendJson(response, 202, await startJob(source, engine, retryJobId, normalizeFormat(format), { mode, voice: cleanVoice, summaryOptions: { targetMinutes, captions }, brandId: typeof brandId === 'string' ? brandId : undefined, focusPrompt: typeof focusPrompt === 'string' ? focusPrompt.trim().slice(0, 260) : '' }));
     }
     const resumeMatch = /^\/api\/jobs\/([a-f0-9-]+)\/(resume|search-more)$/.exec(pathname);
     if (resumeMatch && request.method === 'POST') {

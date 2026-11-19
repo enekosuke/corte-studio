@@ -215,7 +215,7 @@ export async function mapLimit(items, concurrency, worker) {
   return results;
 }
 
-export async function chooseClips(infer, transcript, media, progress, local = false, { sourceTitle = '', sourceChannel, mode = 'normal', exclude = [] } = {}) {
+export async function chooseClips(infer, transcript, media, progress, local = false, { sourceTitle = '', sourceChannel, mode = 'normal', exclude = [], focusPrompt = '' } = {}) {
   const isPrototype = mode === 'prototype';
   const maxDuration = isPrototype ? 24.5 : 90.3;
   const overlaps = ({ start, end }) => exclude.some((clip) => start < clip.end && end > clip.start);
@@ -246,7 +246,8 @@ export async function chooseClips(infer, transcript, media, progress, local = fa
       ...(Number.isFinite(wps) ? { wps } : {}),
       ...(Number.isFinite(pauseBefore) && pauseBefore >= 0.6 ? { pauseBefore } : {}),
     }));
-    const systemPrompt = `${editorSystem}${isPrototype ? prototypeEditorExtension : ''}${local ? `\nEsta ventana solo contiene los IDs del ${window[0].id} al ${window.at(-1).id}. Para calcular la duración resta el inicio del primer segmento del final del último.` : ''}`;
+    const cleanFocus = typeof focusPrompt === 'string' && focusPrompt.trim() ? `\n\n# Enfoque solicitado por el creador\nPrioriza específicamente este criterio al elegir los momentos: ${focusPrompt.trim().slice(0, 260)}` : '';
+    const systemPrompt = `${editorSystem}${isPrototype ? prototypeEditorExtension : ''}${cleanFocus}${local ? `\nEsta ventana solo contiene los IDs del ${window[0].id} al ${window.at(-1).id}. Para calcular la duración resta el inicio del primer segmento del final del último.` : ''}`;
     const request = {
       system: systemPrompt,
       schema, maxOutputTokens: 8192,
@@ -642,17 +643,34 @@ export function cvFramingPlan(frames, format, media, sceneData) {
   for (let i = 0; i < frames.length; i++) {
     const cv = cvFrames[i];
     if (!cv) continue;
-    const rawBox = cv.faces?.[0] ?? cv.actionBox;
-    const box = safeRegion(rawBox);
-    if (!box) continue;
     const prev = track.at(-1);
+    const faceRegions = (cv.faces ?? []).map(safeRegion).filter(Boolean);
+    let box = null;
+    if (faceRegions.length) {
+      if (prev && !cv.cutBefore) {
+        // Sigue la cara más cercana a la persona rastreada en el fotograma previo para evitar saltos bruscos
+        box = faceRegions.reduce((best, cand) => {
+          const dBest = Math.hypot(best.x - prev.x, best.y - prev.y);
+          const dCand = Math.hypot(cand.x - prev.x, cand.y - prev.y);
+          return dCand < dBest ? cand : best;
+        });
+      } else {
+        // En el primer fotograma o tras un corte, prioriza la cara principal (mayor área) en vez de la superior izquierda
+        box = faceRegions.reduce((best, cand) => (cand.width * cand.height > best.width * best.height ? cand : best));
+      }
+    } else {
+      box = safeRegion(cv.actionBox);
+    }
+    if (!box) continue;
+    // Ligero margen superior (headroom) en caras para nunca cortar la frente
+    const targetY = faceRegions.length ? Math.max(0.05, box.y - box.height * 0.06) : box.y;
     const smooth = (coord, val) => {
       if (!prev || cv.cutBefore) return val;
       if (Math.abs(val - prev[coord]) < 0.03) return prev[coord];
       return 0.65 * val + 0.35 * prev[coord];
     };
     const x = keepRegion(smooth('x', box.x), box.x, box.width, viewW);
-    const y = keepRegion(smooth('y', box.y), box.y, box.height, viewH);
+    const y = keepRegion(smooth('y', targetY), targetY, box.height, viewH);
     track.push({ offset: frames[i].offset, x, y, cutBefore: Boolean(cv.cutBefore) });
     reg.width = Math.min(1, Math.max(reg.width, box.width * 1.2));
     reg.height = Math.min(1, Math.max(reg.height, box.height * 1.2));

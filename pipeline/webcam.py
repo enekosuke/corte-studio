@@ -384,8 +384,10 @@ def analyze_scene(paths):
     ai_probs, semantic_cuts = _classify_frames_ai(engine, valid_paths) if valid_paths else (None, None)
 
     cascades = Path(cv2.data.haarcascades)
+    frontal_alt = cv2.CascadeClassifier(str(cascades / "haarcascade_frontalface_alt2.xml")) if engine["face"] is None else None
     frontal = cv2.CascadeClassifier(str(cascades / "haarcascade_frontalface_default.xml")) if engine["face"] is None else None
     profile = cv2.CascadeClassifier(str(cascades / "haarcascade_profileface.xml")) if engine["face"] is None else None
+    clahe = cv2.createCLAHE(clipLimit=2.2, tileGridSize=(8, 8))
 
     frames = []
     grays = []
@@ -409,15 +411,36 @@ def analyze_scene(paths):
                 for b in f_res.boxes.xyxyn.cpu().tolist():
                     raw_faces.append(_round_box(b[0], b[1], b[2], b[3]))
         else:
-            eq = cv2.equalizeHist(gray)
-            for fx, fy, fw, fh in frontal.detectMultiScale(eq, scaleFactor=1.1, minNeighbors=4, minSize=(22, 22)):
-                raw_faces.append(_round_box(fx / w, fy / h, (fx + fw) / w, (fy + fh) / h))
-            if not profile.empty():
-                for fx, fy, fw, fh in profile.detectMultiScale(eq, scaleFactor=1.12, minNeighbors=4, minSize=(22, 22)):
-                    raw_faces.append(_round_box(fx / w, fy / h, (fx + fw) / w, (fy + fh) / h))
+            eq = clahe.apply(gray)
+            min_face = max(24, int(min(w, h) * 0.045))
+            def _valid_haar(fx, fy, fw, fh):
+                if fw <= 0 or fh <= 0:
+                    return False
+                asp = fw / float(fh)
+                if asp < 0.68 or asp > 1.48:
+                    return False
+                if fw / float(w) > 0.62 or fh / float(h) > 0.82:
+                    return False
+                patch = gray[max(0, fy):min(h, fy + fh), max(0, fx):min(w, fx + fw)]
+                return patch.size > 0 and float(np.std(patch)) >= 13.0
+
+            if frontal_alt is not None and not frontal_alt.empty():
+                for fx, fy, fw, fh in frontal_alt.detectMultiScale(eq, scaleFactor=1.08, minNeighbors=5, minSize=(min_face, min_face)):
+                    if _valid_haar(fx, fy, fw, fh):
+                        raw_faces.append(_round_box(fx / w, fy / h, (fx + fw) / w, (fy + fh) / h))
+            if not raw_faces and frontal is not None and not frontal.empty():
+                for fx, fy, fw, fh in frontal.detectMultiScale(eq, scaleFactor=1.1, minNeighbors=5, minSize=(min_face, min_face)):
+                    if _valid_haar(fx, fy, fw, fh):
+                        raw_faces.append(_round_box(fx / w, fy / h, (fx + fw) / w, (fy + fh) / h))
+            if len(raw_faces) < 2 and profile is not None and not profile.empty():
+                for fx, fy, fw, fh in profile.detectMultiScale(eq, scaleFactor=1.12, minNeighbors=6, minSize=(min_face, min_face)):
+                    if _valid_haar(fx, fy, fw, fh):
+                        raw_faces.append(_round_box(fx / w, fy / h, (fx + fw) / w, (fy + fh) / h))
                 flipped = cv2.flip(eq, 1)
-                for fx, fy, fw, fh in profile.detectMultiScale(flipped, scaleFactor=1.12, minNeighbors=4, minSize=(22, 22)):
-                    raw_faces.append(_round_box((w - fx - fw) / w, fy / h, (w - fx) / w, (fy + fh) / h))
+                for fx, fy, fw, fh in profile.detectMultiScale(flipped, scaleFactor=1.12, minNeighbors=6, minSize=(min_face, min_face)):
+                    rfx = w - fx - fw
+                    if _valid_haar(rfx, fy, fw, fh):
+                        raw_faces.append(_round_box(rfx / w, fy / h, (rfx + fw) / w, (fy + fh) / h))
         faces = _dedupe_boxes(raw_faces)[:4]
 
         # 2. Person boxes + pose keypoints via YOLO11n-Pose
@@ -519,6 +542,30 @@ def analyze_scene(paths):
         })
         prev_gray = gray
         prev_hist = hist
+
+    # Temporal outlier suppression for Haar fallback: drop single-frame phantom faces not seen in neighbors
+    if engine["face"] is None and len(frames) >= 3:
+        for i, fr in enumerate(frames):
+            if not fr["faces"] or fr.get("cutBefore"):
+                continue
+            neighbors = []
+            if i > 0 and not fr.get("cutBefore"):
+                neighbors.extend(frames[i - 1].get("faces") or [])
+            if i + 1 < len(frames) and not frames[i + 1].get("cutBefore"):
+                neighbors.extend(frames[i + 1].get("faces") or [])
+            if not neighbors:
+                continue
+            confirmed = [
+                fb for fb in fr["faces"]
+                if any(
+                    abs(((fb["left"] + fb["right"]) / 2) - ((nb["left"] + nb["right"]) / 2)) < 0.16 and
+                    abs(((fb["top"] + fb["bottom"]) / 2) - ((nb["top"] + nb["bottom"]) / 2)) < 0.18
+                    for nb in neighbors
+                )
+            ]
+            if confirmed:
+                fr["faces"] = confirmed
+                fr["rawFaces"] = confirmed
 
     # Refine per-cluster corner webcam boxes cleanly with multi-frame Canny edge snap.
     inset = None

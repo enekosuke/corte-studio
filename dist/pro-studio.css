@@ -558,3 +558,13 @@ body.eco-mode *, body.eco-mode *::before, body.eco-mode *::after {
   .pro-form-grid, .pro-preset-grid { grid-template-columns: 1fr; }
   .pro-statusbar .pro-hide-sm { display: none; }
 }
+
+/* v5.1 visual polish fixes */
+#pro-virality-card:empty,
+#pro-caption-gallery:empty,
+#pro-word-chips:empty {
+  display: none !important;
+}
+.pro-field > span {
+  display: inline;
+}
